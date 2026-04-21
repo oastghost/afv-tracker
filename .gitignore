@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Environment / secrets — NEVER commit these
+.env
+server/.env
+*.env
+
+# Local databases
+*.db
+*.sqlite3
+
+# AFV Tracker local config (contains pilot ID)
+config.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
