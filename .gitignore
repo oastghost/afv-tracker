@@ -29,3 +29,7 @@ config.json
 # OS
 .DS_Store
 Thumbs.db
+
+~$V_UIX_Briefing.docx
+AFV_UIX_Briefing.docx
+gen_briefing.js
