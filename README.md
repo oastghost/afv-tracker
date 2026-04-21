@@ -8,7 +8,8 @@ Desktop flight tracking application for AFV pilots flying in Microsoft Flight Si
 - **Live MSFS telemetry** via SimConnect — altitude, speed, fuel, flight phase
 - **Automatic flight phase detection** — Pre-flight → Taxi → Climb → Cruise → Approach → Landing → Parked
 - **Gate assignment** — assigned automatically when you enter APPROACH phase
-- **Flight logging** — every completed flight is saved locally and synced to the backend
+- **Real-time pilot roster** — live WebSocket connection to the server; see all connected AFV pilots, their phase, altitude, and assigned gate
+- **Flight logging** — every completed flight synced to the backend with fuel used, distance flown, and landing rate
 - **Dark aviation UI** — AFV red, black, and white theme; cockpit-style layout
 
 ---
@@ -70,12 +71,12 @@ These are saved to `~/.afv_tracker/config.json` and reloaded on future launches.
 
 ## Usage
 
-1. Open the app — it auto-fetches your latest SimBrief OFP
+1. Open the app — it auto-fetches your latest SimBrief OFP and connects to the live roster
 2. Load MSFS and start your flight
 3. Click **START TRACKING** — the app connects to MSFS via SimConnect
-4. Fly your route — watch altitude, speed, phase, and fuel update every 5 seconds
-5. As you descend through **10,000 ft within 50 nm of your destination**, the gate banner appears
-6. Park with engines off and parking brake set — the flight is logged automatically
+4. Fly your route — altitude, speed, phase, and fuel update every 5 seconds; your position is broadcast to the roster
+5. As you descend through **10,000 ft within 50 nm of your destination**, a gate is assigned and the gate banner appears
+6. Park with engines off and parking brake set — the flight is logged (fuel used, distance flown, landing rate) and your gate is released
 
 ---
 
@@ -125,6 +126,7 @@ Gate sizes: **S** = Small (turboprop), **M** = Medium (narrowbody), **L** = Larg
 | `GET` | `/api/gates/{icao}` | List all gates |
 | `POST` | `/api/pilots/register` | Register pilot |
 | `GET` | `/api/pilots/{pilot_id}` | Pilot profile |
+| `WS` | `/ws/{pilot_id}` | Real-time roster sync (telemetry, gate events) |
 | `GET` | `/health` | Health check |
 
 Full interactive docs: `http://localhost:8000/docs`
@@ -144,12 +146,17 @@ Full interactive docs: `http://localhost:8000/docs`
 │  │ SimBrief │ │ SimConn  │ │ Flight │  │
 │  │  Fetch   │ │  Worker  │ │Tracker │  │
 │  └──────────┘ └──────────┘ └────────┘  │
+│  ┌──────────┐ ┌──────────────────────┐  │
+│  │  Gate    │ │   Network Client     │  │
+│  │ Manager  │ │  (HTTP + WebSocket)  │  │
+│  └──────────┘ └──────────────────────┘  │
 │         GUI (MainWindow + Panels)       │
-└────────────────────┬───────────────────┘
-                     │ HTTP (requests)
-┌────────────────────▼───────────────────┐
+└──────────┬─────────────────┬───────────┘
+           │ HTTP (REST)     │ WebSocket
+┌──────────▼─────────────────▼───────────┐
 │   AFV Server (FastAPI + SQLite)         │
 │  /api/flights  /api/gates  /api/pilots  │
+│  /ws/{pilot_id}  (live roster sync)     │
 └────────────────────────────────────────┘
 ```
 

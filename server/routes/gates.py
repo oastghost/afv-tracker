@@ -157,12 +157,12 @@ def assign_gate(
         )
 
     # Lock the gate.
-    # Preferred: write aircraft_reg to gates.aircraft_reg so the existing
-    # virtual `occupied` column (aircraft_reg IS NOT NULL) reflects it immediately.
-    # Fallback: use afv_pilot_id only (if the registration isn't in the aircrafts table).
-    gate.afv_pilot_id = pilot_id or None
-
+    # afv_pilot_id must be non-NULL after this block or the gate stays unlocked
+    # and can be double-assigned. Use reg or a sentinel when pilot_id is absent.
     reg = aircraft_reg.strip().upper() if aircraft_reg else None
+    _lock = pilot_id.strip() if pilot_id else None
+    gate.afv_pilot_id = _lock or reg or f"LOCK:{icao}:{gate.gate_name}"
+
     if reg:
         ac_in_db = db.query(Aircraft).filter(Aircraft.aircraft_reg == reg).first()
         if ac_in_db:

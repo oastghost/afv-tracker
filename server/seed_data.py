@@ -123,6 +123,9 @@ GATES = [
 ]
 
 
+_SIZE_TO_CATEGORY = {"S": "Light", "M": "Medium", "L": "Heavy", "H": "Jumbo"}
+
+
 def seed():
     init_db()
 
@@ -145,10 +148,9 @@ def seed():
         gates = [
             Gate(
                 airport_icao=airport,
-                gate_number=gate_num,
-                terminal=terminal,
-                gate_size=size,
-                is_available=True,
+                gate_name=gate_num,
+                flight_type=terminal,
+                size_category=_SIZE_TO_CATEGORY[size],
             )
             for airport, gate_num, terminal, size in GATES
         ]
