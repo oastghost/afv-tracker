@@ -25,15 +25,49 @@ except ImportError:
 
 @dataclass
 class Telemetry:
+    # Position
     latitude: float = 0.0
     longitude: float = 0.0
     altitude_ft: float = 0.0
+    # Attitude
+    heading_mag: float = 0.0
+    pitch_deg: float = 0.0
+    bank_deg: float = 0.0
+    # Speed
     groundspeed_kts: float = 0.0
-    fuel_lbs: float = 0.0
+    ias_kts: float = 0.0
+    tas_kts: float = 0.0
+    mach: float = 0.0
+    vertical_speed_fpm: float = 0.0
+    # Engines (engine_on = eng1 combustion, kept for phase detection)
     engine_on: bool = False
+    eng2_on: bool = False
+    eng3_on: bool = False
+    eng4_on: bool = False
+    eng1_n1: float = 0.0
+    eng2_n1: float = 0.0
+    eng3_n1: float = 0.0
+    eng4_n1: float = 0.0
+    # Fuel
+    fuel_lbs: float = 0.0
+    fuel_qty_gal: float = 0.0
+    # Systems
     on_ground: bool = True
     parking_brake: bool = False
-    vertical_speed_fpm: float = 0.0
+    autopilot_on: bool = False
+    autopilot_alt_ft: float = 0.0
+    autopilot_hdg: float = 0.0
+    flaps_pct: float = 0.0
+    gear_down: bool = True
+    transponder: int = 2000
+    # Lights
+    lights_strobe: bool = False
+    lights_landing: bool = False
+    # Ambient / weather
+    wind_speed_kts: float = 0.0
+    wind_dir_deg: float = 0.0
+    oat_celsius: float = 0.0
+    qnh_mb: float = 1013.0
     # Set at touchdown
     touchdown_fpm: Optional[float] = None
     timestamp: float = field(default_factory=time.time)
@@ -150,26 +184,50 @@ class SimConnectWorker(QThread):
 
     def _poll(self, ar: "AircraftRequests", prev_on_ground: bool, prev_alt: float) -> Optional[Telemetry]:
         try:
-            lat = self._get(ar, "PLANE_LATITUDE", 0.0)
-            lon = self._get(ar, "PLANE_LONGITUDE", 0.0)
-            alt = self._get(ar, "PLANE_ALTITUDE", 0.0)
-            gs = self._get(ar, "GROUND_VELOCITY", 0.0)
-            fuel = self._get(ar, "FUEL_TOTAL_QUANTITY_WEIGHT", 0.0)
-            eng = self._get(ar, "ENG_COMBUSTION:1", 0)
-            on_gnd = self._get(ar, "SIM_ON_GROUND", 1)
-            pk_brake = self._get(ar, "BRAKE_PARKING_POSITION", 0)
-            vs = self._get(ar, "VERTICAL_SPEED", 0.0)
-
             tel = Telemetry(
-                latitude=float(lat),
-                longitude=float(lon),
-                altitude_ft=float(alt),
-                groundspeed_kts=float(gs),
-                fuel_lbs=float(fuel),
-                engine_on=bool(int(eng)),
-                on_ground=bool(int(on_gnd)),
-                parking_brake=bool(int(pk_brake)),
-                vertical_speed_fpm=float(vs) * 60,  # SimConnect returns ft/s
+                # Position
+                latitude=float(self._get(ar, "PLANE_LATITUDE", 0.0)),
+                longitude=float(self._get(ar, "PLANE_LONGITUDE", 0.0)),
+                altitude_ft=float(self._get(ar, "PLANE_ALTITUDE", 0.0)),
+                # Attitude
+                heading_mag=float(self._get(ar, "PLANE_HEADING_DEGREES_MAGNETIC", 0.0)),
+                pitch_deg=float(self._get(ar, "PLANE_PITCH_DEGREES", 0.0)),
+                bank_deg=float(self._get(ar, "PLANE_BANK_DEGREES", 0.0)),
+                # Speed
+                groundspeed_kts=float(self._get(ar, "GROUND_VELOCITY", 0.0)),
+                ias_kts=float(self._get(ar, "AIRSPEED_INDICATED", 0.0)),
+                tas_kts=float(self._get(ar, "AIRSPEED_TRUE", 0.0)),
+                mach=float(self._get(ar, "AIRSPEED_MACH", 0.0)),
+                vertical_speed_fpm=float(self._get(ar, "VERTICAL_SPEED", 0.0)) * 60,
+                # Engines
+                engine_on=bool(int(self._get(ar, "ENG_COMBUSTION:1", 0))),
+                eng2_on=bool(int(self._get(ar, "ENG_COMBUSTION:2", 0))),
+                eng3_on=bool(int(self._get(ar, "ENG_COMBUSTION:3", 0))),
+                eng4_on=bool(int(self._get(ar, "ENG_COMBUSTION:4", 0))),
+                eng1_n1=float(self._get(ar, "ENG_N1_RPM:1", 0.0)),
+                eng2_n1=float(self._get(ar, "ENG_N1_RPM:2", 0.0)),
+                eng3_n1=float(self._get(ar, "ENG_N1_RPM:3", 0.0)),
+                eng4_n1=float(self._get(ar, "ENG_N1_RPM:4", 0.0)),
+                # Fuel
+                fuel_lbs=float(self._get(ar, "FUEL_TOTAL_QUANTITY_WEIGHT", 0.0)),
+                fuel_qty_gal=float(self._get(ar, "FUEL_TOTAL_QUANTITY", 0.0)),
+                # Systems
+                on_ground=bool(int(self._get(ar, "SIM_ON_GROUND", 1))),
+                parking_brake=bool(int(self._get(ar, "BRAKE_PARKING_POSITION", 0))),
+                autopilot_on=bool(int(self._get(ar, "AUTOPILOT_MASTER", 0))),
+                autopilot_alt_ft=float(self._get(ar, "AUTOPILOT_ALTITUDE_LOCK_VAR", 0.0)),
+                autopilot_hdg=float(self._get(ar, "AUTOPILOT_HEADING_LOCK_DIR", 0.0)),
+                flaps_pct=float(self._get(ar, "FLAPS_HANDLE_PERCENT", 0.0)),
+                gear_down=bool(int(self._get(ar, "GEAR_HANDLE_POSITION", 1))),
+                transponder=int(self._get(ar, "TRANSPONDER_CODE:1", 2000)),
+                # Lights
+                lights_strobe=bool(int(self._get(ar, "LIGHT_STROBE", 0))),
+                lights_landing=bool(int(self._get(ar, "LIGHT_LANDING", 0))),
+                # Ambient
+                wind_speed_kts=float(self._get(ar, "AMBIENT_WIND_VELOCITY", 0.0)),
+                wind_dir_deg=float(self._get(ar, "AMBIENT_WIND_DIRECTION", 0.0)),
+                oat_celsius=float(self._get(ar, "AMBIENT_TEMPERATURE", 0.0)),
+                qnh_mb=float(self._get(ar, "AMBIENT_PRESSURE", 1013.0)),
                 timestamp=time.time(),
             )
 

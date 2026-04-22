@@ -20,6 +20,7 @@ AIRCRAFT_GATE_SIZE: dict[str, str] = {
     "DH8D": "S", "DH8C": "S", "DH8B": "S", "DH8A": "S",
     "E145": "S", "E135": "S", "E170": "S",
     "SF34": "S", "BE20": "S", "C208": "S",
+    "PC12": "S", "TBM9": "S", "BE9L": "S", "C182": "S",
     # Medium (narrowbody)
     "B737": "M", "B738": "M", "B739": "M", "B73G": "M",
     "B733": "M", "B734": "M", "B735": "M",
@@ -34,7 +35,8 @@ AIRCRAFT_GATE_SIZE: dict[str, str] = {
     "B77W": "L", "B773": "L", "B772": "L",
     # Heavy / Super
     "B744": "H", "B74S": "H", "B74D": "H",
-    "A388": "H", "A380": "H",
+    "A388": "H", "A380": "H", "MD11": "H",
+    "A346": "L", "A342": "L", "A343": "L",
     "A124": "H", "C17":  "H",
 }
 

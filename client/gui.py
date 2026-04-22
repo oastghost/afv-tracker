@@ -5,9 +5,12 @@ Dark aviation theme: black + AFV red (#C41E3A) + white.
 """
 
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Optional
+
+import requests
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPalette, QIcon, QPixmap
@@ -1492,6 +1495,58 @@ class MainWindow(QMainWindow):
             self._status_panel.update_telemetry(tel, elapsed, dist)
         # Broadcast position to other pilots on the network
         self._broadcast_own_telemetry(tel)
+        # Persist full telemetry to the backend (fire-and-forget)
+        if self._tracking and self._ofp:
+            threading.Thread(target=self._post_telemetry, args=(tel,), daemon=True).start()
+
+    def _post_telemetry(self, tel: Telemetry):
+        cfg = config.load_config()
+        server = cfg.get("server_url", "http://localhost:8000").rstrip("/")
+        phase = self._flight_tracker.phase.value if self._flight_tracker else "UNKNOWN"
+        payload = {
+            "vatsim_cid": cfg.get("vatsim_cid", ""),
+            "flight_number": self._ofp.flight_number if self._ofp else None,
+            "phase": phase,
+            "latitude": tel.latitude,
+            "longitude": tel.longitude,
+            "altitude_ft": tel.altitude_ft,
+            "heading_mag": tel.heading_mag,
+            "pitch_deg": tel.pitch_deg,
+            "bank_deg": tel.bank_deg,
+            "groundspeed_kts": tel.groundspeed_kts,
+            "ias_kts": tel.ias_kts,
+            "tas_kts": tel.tas_kts,
+            "mach": tel.mach,
+            "vertical_speed_fpm": tel.vertical_speed_fpm,
+            "eng1_on": float(tel.engine_on),
+            "eng2_on": float(tel.eng2_on),
+            "eng3_on": float(tel.eng3_on),
+            "eng4_on": float(tel.eng4_on),
+            "eng1_n1": tel.eng1_n1,
+            "eng2_n1": tel.eng2_n1,
+            "eng3_n1": tel.eng3_n1,
+            "eng4_n1": tel.eng4_n1,
+            "fuel_lbs": tel.fuel_lbs,
+            "fuel_qty_gal": tel.fuel_qty_gal,
+            "autopilot_on": float(tel.autopilot_on),
+            "autopilot_alt_ft": tel.autopilot_alt_ft,
+            "autopilot_hdg": tel.autopilot_hdg,
+            "flaps_pct": tel.flaps_pct,
+            "gear_down": float(tel.gear_down),
+            "transponder": tel.transponder,
+            "parking_brake": float(tel.parking_brake),
+            "lights_strobe": float(tel.lights_strobe),
+            "lights_landing": float(tel.lights_landing),
+            "wind_speed_kts": tel.wind_speed_kts,
+            "wind_dir_deg": tel.wind_dir_deg,
+            "oat_celsius": tel.oat_celsius,
+            "qnh_mb": tel.qnh_mb,
+            "timestamp": tel.timestamp,
+        }
+        try:
+            requests.post(f"{server}/api/flights/track", json=payload, timeout=5)
+        except Exception:
+            pass
 
     @pyqtSlot(object)
     def _on_phase_changed(self, phase: FlightPhase):
@@ -1754,4 +1809,22 @@ _AIRPORT_COORDS: dict[str, tuple[float, float]] = {
     "FVHA": (-17.9318,  31.0928),  # Harare
     "FANS": (-29.6242,  27.4790),  # Maseru
     "FDSK": (-26.3586,  31.7168),  # Manzini
+    # ── Middle East / Gulf ────────────────────────────────────────────────────
+    "OMDB": ( 25.2528,  55.3644),  # Dubai International
+    "OMDW": ( 24.8963,  55.1717),  # Dubai World Central
+    "OMAA": ( 24.4430,  54.6511),  # Abu Dhabi
+    "OTHH": ( 25.2731,  51.6086),  # Doha Hamad
+    "OEJN": ( 21.6796,  39.1565),  # Jeddah
+    "OEDF": ( 26.4712,  49.7979),  # Dammam
+    "OEAA": ( 24.9576,  46.6988),  # Riyadh
+    "OOMS": ( 23.5933,  58.2844),  # Muscat
+    "OKBK": ( 29.2266,  47.9689),  # Kuwait
+    # ── Asia ─────────────────────────────────────────────────────────────────
+    "VABB": ( 19.0896,  72.8656),  # Mumbai
+    "VIDP": ( 28.5562,  77.1000),  # Delhi
+    "WSSS": (  1.3644, 103.9915),  # Singapore Changi
+    "VHHH": ( 22.3080, 113.9185),  # Hong Kong
+    "ZBAA": ( 40.0801, 116.5846),  # Beijing Capital
+    # ── Turkey ───────────────────────────────────────────────────────────────
+    "LTFM": ( 41.2753,  28.7519),  # Istanbul
 }

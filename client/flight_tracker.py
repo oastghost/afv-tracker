@@ -169,7 +169,7 @@ class FlightTracker(QObject):
     @property
     def distance_to_dest_nm(self) -> float:
         if self._last_lat is None or (self.dest_lat == 0 and self.dest_lon == 0):
-            return 0.0
+            return float("inf")  # unknown destination — never triggers distance thresholds
         return haversine_nm(self._last_lat, self._last_lon, self.dest_lat, self.dest_lon)
 
     @property
@@ -193,15 +193,17 @@ class FlightTracker(QObject):
         # ── On ground ──────────────────────────────────────────────────
         if tel.on_ground:
             self._cruise_stable_since = None   # reset stability timer on ground
+            if tel.groundspeed_kts >= TAXI_SPEED_KTS:
+                return FlightPhase.TAKEOFF
+            # Any movement = taxiing — ENG_COMBUSTION is unreliable on many aircraft
+            if tel.groundspeed_kts > 1.0:
+                return FlightPhase.TAXI_IN if self._landed else FlightPhase.TAXI_OUT
+            # Stationary: use engine state to distinguish pre-flight from taxi hold
             if not tel.engine_on:
                 if tel.parking_brake and self._landed:
                     return FlightPhase.PARKED
                 return FlightPhase.PRE_FLIGHT
-            if tel.groundspeed_kts >= TAXI_SPEED_KTS:
-                return FlightPhase.TAKEOFF
-            if self._landed:
-                return FlightPhase.TAXI_IN
-            return FlightPhase.TAXI_OUT
+            return FlightPhase.TAXI_IN if self._landed else FlightPhase.TAXI_OUT
 
         # ── Airborne ────────────────────────────────────────────────────
 
@@ -236,9 +238,11 @@ class FlightTracker(QObject):
             return FlightPhase.DESCENT
 
         # VS is in the ±300 fpm grey zone — hold whatever phase we're in
-        if self.phase in (FlightPhase.CLIMB, FlightPhase.DESCENT,
-                          FlightPhase.CRUISE, FlightPhase.APPROACH):
+        if self.phase in (FlightPhase.CLIMB, FlightPhase.DESCENT, FlightPhase.CRUISE):
             return self.phase
+        if self.phase == FlightPhase.APPROACH and alt < APPROACH_ALT_FT:
+            return self.phase  # still below 10 000 ft — stay in approach
+        # APPROACH above 10 000 ft (e.g. go-around) — fall through to climb/descent
 
         return FlightPhase.CLIMB   # default airborne fallback
 
