@@ -30,15 +30,52 @@ class PilotResponse(BaseModel):
 # ── Telemetry ──────────────────────────────────────────────────────────────────
 
 class TelemetryUpdate(BaseModel):
-    vatsim_cid:     str
-    flight_number:  Optional[str] = None
-    latitude:       float
-    longitude:      float
-    altitude_ft:    float
+    vatsim_cid:      str
+    flight_number:   Optional[str] = None
+    phase:           str
+    timestamp:       Optional[float] = None
+    # Position
+    latitude:        float
+    longitude:       float
+    altitude_ft:     float
+    # Attitude
+    heading_mag:     Optional[float] = None
+    pitch_deg:       Optional[float] = None
+    bank_deg:        Optional[float] = None
+    # Speed
     groundspeed_kts: float
-    fuel_lbs:       float
-    phase:          str
-    timestamp:      Optional[float] = None
+    ias_kts:         Optional[float] = None
+    tas_kts:         Optional[float] = None
+    mach:            Optional[float] = None
+    vertical_speed_fpm: Optional[float] = None
+    # Engines
+    eng1_on:         Optional[float] = None
+    eng2_on:         Optional[float] = None
+    eng3_on:         Optional[float] = None
+    eng4_on:         Optional[float] = None
+    eng1_n1:         Optional[float] = None
+    eng2_n1:         Optional[float] = None
+    eng3_n1:         Optional[float] = None
+    eng4_n1:         Optional[float] = None
+    # Fuel
+    fuel_lbs:        float
+    fuel_qty_gal:    Optional[float] = None
+    # Systems
+    autopilot_on:    Optional[float] = None
+    autopilot_alt_ft: Optional[float] = None
+    autopilot_hdg:   Optional[float] = None
+    flaps_pct:       Optional[float] = None
+    gear_down:       Optional[float] = None
+    transponder:     Optional[int]   = None
+    parking_brake:   Optional[float] = None
+    # Lights
+    lights_strobe:   Optional[float] = None
+    lights_landing:  Optional[float] = None
+    # Ambient
+    wind_speed_kts:  Optional[float] = None
+    wind_dir_deg:    Optional[float] = None
+    oat_celsius:     Optional[float] = None
+    qnh_mb:          Optional[float] = None
 
 
 # ── Flights ────────────────────────────────────────────────────────────────────

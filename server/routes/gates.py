@@ -153,7 +153,7 @@ def assign_gate(
             terminal="",
             gate_size=our_size,
             fallback=True,
-            message="No gates available. Contact ground for manual assignment.",
+            message="No gates available. Park at own discretion and advise on Discord.",
         )
 
     # Lock the gate.

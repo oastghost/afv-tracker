@@ -155,12 +155,49 @@ class TelemetryRecord(Base):
     id              = Column(Integer, primary_key=True, index=True)
     vatsim_cid      = Column(String(20), index=True, nullable=False)
     flight_number   = Column(String(20), nullable=True)
-    latitude        = Column(Float,  default=0.0)
-    longitude       = Column(Float,  default=0.0)
-    altitude_ft     = Column(Float,  default=0.0)
-    groundspeed_kts = Column(Float,  default=0.0)
-    fuel_lbs        = Column(Float,  default=0.0)
     phase           = Column(String(20), default="UNKNOWN")
+    # Position
+    latitude        = Column(Float, default=0.0)
+    longitude       = Column(Float, default=0.0)
+    altitude_ft     = Column(Float, default=0.0)
+    # Attitude
+    heading_mag     = Column(Float, nullable=True)
+    pitch_deg       = Column(Float, nullable=True)
+    bank_deg        = Column(Float, nullable=True)
+    # Speed
+    groundspeed_kts = Column(Float, default=0.0)
+    ias_kts         = Column(Float, nullable=True)
+    tas_kts         = Column(Float, nullable=True)
+    mach            = Column(Float, nullable=True)
+    vertical_speed_fpm = Column(Float, nullable=True)
+    # Engines
+    eng1_on         = Column(Float, nullable=True)   # 0/1 stored as Float for portability
+    eng2_on         = Column(Float, nullable=True)
+    eng3_on         = Column(Float, nullable=True)
+    eng4_on         = Column(Float, nullable=True)
+    eng1_n1         = Column(Float, nullable=True)
+    eng2_n1         = Column(Float, nullable=True)
+    eng3_n1         = Column(Float, nullable=True)
+    eng4_n1         = Column(Float, nullable=True)
+    # Fuel
+    fuel_lbs        = Column(Float, default=0.0)
+    fuel_qty_gal    = Column(Float, nullable=True)
+    # Systems
+    autopilot_on    = Column(Float, nullable=True)
+    autopilot_alt_ft = Column(Float, nullable=True)
+    autopilot_hdg   = Column(Float, nullable=True)
+    flaps_pct       = Column(Float, nullable=True)
+    gear_down       = Column(Float, nullable=True)
+    transponder     = Column(Integer, nullable=True)
+    parking_brake   = Column(Float, nullable=True)
+    # Lights
+    lights_strobe   = Column(Float, nullable=True)
+    lights_landing  = Column(Float, nullable=True)
+    # Ambient
+    wind_speed_kts  = Column(Float, nullable=True)
+    wind_dir_deg    = Column(Float, nullable=True)
+    oat_celsius     = Column(Float, nullable=True)
+    qnh_mb          = Column(Float, nullable=True)
     recorded_at     = Column(DateTime,
                              default=lambda: datetime.now(timezone.utc))
 
@@ -194,11 +231,53 @@ def _ensure_gates_afv_column():
                 pass  # Column already exists — fine
 
 
+_TELEMETRY_NEW_COLUMNS = [
+    ("heading_mag", "FLOAT"), ("pitch_deg", "FLOAT"), ("bank_deg", "FLOAT"),
+    ("ias_kts", "FLOAT"), ("tas_kts", "FLOAT"), ("mach", "FLOAT"),
+    ("vertical_speed_fpm", "FLOAT"),
+    ("eng1_on", "FLOAT"), ("eng2_on", "FLOAT"), ("eng3_on", "FLOAT"), ("eng4_on", "FLOAT"),
+    ("eng1_n1", "FLOAT"), ("eng2_n1", "FLOAT"), ("eng3_n1", "FLOAT"), ("eng4_n1", "FLOAT"),
+    ("fuel_qty_gal", "FLOAT"),
+    ("autopilot_on", "FLOAT"), ("autopilot_alt_ft", "FLOAT"), ("autopilot_hdg", "FLOAT"),
+    ("flaps_pct", "FLOAT"), ("gear_down", "FLOAT"), ("transponder", "INTEGER"),
+    ("parking_brake", "FLOAT"),
+    ("lights_strobe", "FLOAT"), ("lights_landing", "FLOAT"),
+    ("wind_speed_kts", "FLOAT"), ("wind_dir_deg", "FLOAT"),
+    ("oat_celsius", "FLOAT"), ("qnh_mb", "FLOAT"),
+]
+
+
+def _ensure_telemetry_columns():
+    """Add new telemetry columns to existing telemetry table if absent."""
+    dialect = get_dialect()
+    with engine.connect() as conn:
+        if dialect == "sqlite":
+            result = conn.execute(text("PRAGMA table_info(telemetry)"))
+            existing = {row[1] for row in result}
+        else:
+            result = conn.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'telemetry'"
+            ))
+            existing = {row[0] for row in result}
+
+        for col_name, col_type in _TELEMETRY_NEW_COLUMNS:
+            if col_name not in existing:
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE telemetry ADD COLUMN {col_name} {col_type}"
+                    ))
+                    conn.commit()
+                except Exception:
+                    pass
+
+
 def init_db():
     """Create AFV Tracker's own tables. Add afv_pilot_id to gates if absent."""
     for model in _OWN_TABLES:
         model.__table__.create(bind=engine, checkfirst=True)
     _ensure_gates_afv_column()
+    _ensure_telemetry_columns()
 
 
 def get_db():
