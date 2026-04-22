@@ -18,6 +18,8 @@ DEFAULTS = {
     "simconnect_poll_interval": 5,
     "weight_unit":  "LBS",       # "LBS" or "KG"
     "theme":        "dark",
+    "VA_URL":  "https://africanava.ddns.net",
+    "Pilot_Key":    "",
 }
 
 

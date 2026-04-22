@@ -28,6 +28,8 @@ from flight_tracker import FlightTracker, FlightPhase, haversine_nm
 from gate_manager import GateManager, GateAssignment
 from network_client import NetworkClient
 
+from phpvms_integration import PhpVmsClient
+
 log = logging.getLogger(__name__)
 
 # ── Palette constants ──────────────────────────────────────────────────────────
@@ -225,6 +227,17 @@ class PilotSetupDialog(QDialog):
             self.discord_edit.setText(saved_discord)
         _field("Discord", self.discord_edit)
 
+        self.va_url_edit = QLineEdit()
+        self.va_url_edit.setPlaceholderText("https://africanava.ddns.net")
+        self.va_url_edit.setText(config.get("VA_URL", "https://africanava.ddns.net"))
+        _field("phpVMS Airline URL", self.va_url_edit)
+
+        self.pilot_key_edit = QLineEdit()
+        self.pilot_key_edit.setPlaceholderText("v7 API Key")
+        self.pilot_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.pilot_key_edit.setText(config.get("Pilot_Key", ""))
+        _field("Pilot API Key", self.pilot_key_edit)
+
         unit_panel = QFrame()
         unit_panel.setStyleSheet(
             "QFrame {"
@@ -355,8 +368,8 @@ class PilotSetupDialog(QDialog):
         f_row.addWidget(btn_ok)
         root.addWidget(footer)
 
-    def get_values(self) -> tuple[str, str, str, str, str]:
-        """Returns (vatsim_cid, simbrief_id, pilot_name, discord, weight_unit)."""
+    def get_values(self) -> tuple:
+        """Returns (vatsim_cid, simbrief_id, pilot_name, discord, weight_unit, va_url, pilot_key)."""
         unit = "KG" if self._btn_kg.isChecked() else "LBS"
         return (
             self.vatsim_edit.text().strip(),
@@ -364,6 +377,8 @@ class PilotSetupDialog(QDialog):
             self.name_edit.text().strip(),
             self.discord_edit.text().strip(),
             unit,
+            self.va_url_edit.text().strip(),
+            self.pilot_key_edit.text().strip(),
         )
 
 
@@ -1011,6 +1026,9 @@ class MainWindow(QMainWindow):
         self._simbrief_worker: Optional[SimBriefFetchWorker] = None
         self._gate_worker: Optional[GateFetchWorker] = None
 
+        # phpVMS Integration
+        self._vms = PhpVmsClient()
+
         # Network (multi-pilot WebSocket)
         self._net_client: Optional[NetworkClient] = None
         self._online_pilots: dict[str, dict] = {}
@@ -1334,13 +1352,16 @@ class MainWindow(QMainWindow):
     def _open_setup(self):
         dlg = PilotSetupDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            vatsim_cid, simbrief_id, name, discord, unit = dlg.get_values()
+            vatsim_cid, simbrief_id, name, discord, unit, va_url, pilot_key = dlg.get_values()
             if vatsim_cid:
                 config.set_value("vatsim_cid",  vatsim_cid)
                 config.set_value("simbrief_id", simbrief_id)
                 config.set_value("pilot_name",  name)
                 config.set_value("discord",     discord)
                 config.set_value("weight_unit", unit)
+                config.set_value("VA_URL", va_url)
+                config.set_value("Pilot_Key", pilot_key)
+                self._vms.refresh_credentials()
                 self._cfg = config.load_config()
                 self._pilot_label.setText(name or vatsim_cid)
                 self._gate_manager.pilot_id   = vatsim_cid
@@ -1423,6 +1444,24 @@ class MainWindow(QMainWindow):
                 self._gate_board_ready.emit(ofp.destination_icao, gates)
         threading.Thread(target=_fetch_board, daemon=True).start()
 
+        # Check phpVMS for a matching flight and prefile
+        bids = self._vms.get_bids()
+        if bids:
+            matching_bid = None
+            for b in bids:
+                f_num = str(b.get('flight', {}).get('flight_number', ''))
+                if f_num and f_num in str(ofp.flight_number):
+                    matching_bid = b
+                    break
+            if not matching_bid:
+                matching_bid = bids[0]
+            self._vms.prefile_pirep(
+                bid_data=matching_bid,
+                planned_fuel=ofp.fuel.total_lbs,
+                flight_level=ofp.cruise_altitude,
+                route=ofp.route
+            )
+
     @pyqtSlot(str, object)
     def _apply_gate_board(self, airport: str, gates):
         self._network_panel.load_gate_board(airport, gates)
@@ -1493,6 +1532,15 @@ class MainWindow(QMainWindow):
             dist = self._flight_tracker.distance_to_dest_nm
             elapsed = self._flight_tracker.elapsed_seconds
             self._status_panel.update_telemetry(tel, elapsed, dist)
+            # Send live ACARS to phpVMS
+            self._vms.update_acars(
+                lat=tel.latitude,
+                lon=tel.longitude,
+                alt=tel.altitude_ft,
+                gs=tel.groundspeed_kts,
+                heading=tel.heading_mag,
+                state=self._flight_tracker.phase.vms_code
+            )
         # Broadcast position to other pilots on the network
         self._broadcast_own_telemetry(tel)
         # Persist full telemetry to the backend (fire-and-forget)
@@ -1647,6 +1695,17 @@ class MainWindow(QMainWindow):
             f"{(int(data['flight_time_sec'])%3600)//60:02d}m\n"
             f"Landing rate: {data.get('landing_rate_fpm') or 'N/A'} fpm"
         )
+
+        # File the PIREP on phpVMS
+        flight_time_mins = int(data['flight_time_sec']) // 60
+        fuel_used = data.get('fuel_used_lbs', 0)
+        success = self._vms.file_pirep(
+            flight_time_min=flight_time_mins,
+            fuel_used=fuel_used,
+            log_text=f"Landing Rate: {data.get('landing_rate_fpm')} FPM"
+        )
+        if success:
+            log.info("PIREP filed successfully on Africana Virtual Airways.")
 
     def _post_flight_log(self, payload: dict):
         import threading, requests as req

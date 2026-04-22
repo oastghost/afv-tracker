@@ -122,7 +122,7 @@ def main():
     window = MainWindow()
 
     # Start hidden — the MSFS watcher will show the window when MSFS launches.
-    window.hide()
+    window.show()
 
     # 2. Run the event loop
     exit_code = app.exec()
