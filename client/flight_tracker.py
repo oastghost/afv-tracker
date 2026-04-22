@@ -29,6 +29,23 @@ class FlightPhase(Enum):
     LANDING     = "LANDING"
     TAXI_IN     = "TAXI IN"
     PARKED      = "PARKED"
+    
+    @property
+    def vms_code(self) -> str:
+        """Translates internal phase to phpVMS v7 ACARS codes."""
+        mapping = {
+            FlightPhase.PRE_FLIGHT: "Brd",
+            FlightPhase.TAXI_OUT:   "Txi",
+            FlightPhase.TAKEOFF:    "Dep",
+            FlightPhase.CLIMB:      "Enr",
+            FlightPhase.CRUISE:     "Enr",
+            FlightPhase.DESCENT:    "Enr",
+            FlightPhase.APPROACH:   "App",
+            FlightPhase.LANDING:    "Lnd",
+            FlightPhase.TAXI_IN:    "Lnd",
+            FlightPhase.PARKED:     "Pkd",
+        }
+        return mapping.get(self, "Enr")
 
 
 # ── Thresholds ─────────────────────────────────────────────────────────────────
