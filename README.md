@@ -192,3 +192,7 @@ Double-check your SimBrief username at [simbrief.com](https://www.simbrief.com).
 
 **Gate not assigned**  
 If the server is unreachable, you'll see "CONTACT GROUND FOR GATE ASSIGNMENT". Start the server with `uvicorn main:app --port 8000`.
+
+## Contributors
+
+Beni Esteve aqui
