@@ -49,23 +49,24 @@ class PhpVmsClient:
     def prefile_pirep(self, bid_data, planned_fuel, flight_level, route=""):
         """
         Takes the bid from the website and sends it to phpVMS as a prefiled flight.
-        Handles the nested 'flight' object structure of phpVMS v7.
         """
         url = f"{self.base_url}/api/pireps/prefile"
         
-        # Extract the nested flight details
         flight = bid_data.get('flight', {})
         
+        # Include flight_id and flight_type so phpVMS links this PIREP to the schedule
         payload = {
-            "bid_id": bid_data.get('id'),
+            "flight_id": flight.get('id'),
             "airline_id": flight.get('airline_id'),
             "aircraft_id": bid_data.get('aircraft_id') or flight.get('aircraft_id'),
             "flight_number": flight.get('flight_number'),
             "dpt_airport_id": flight.get('dpt_airport_id'),
             "arr_airport_id": flight.get('arr_airport_id'),
+            "planned_flight_time": flight.get('flight_time', 0),
             "planned_fuel": planned_fuel,
-            "level": int(flight_level),
+            "level": int(flight_level) if flight_level else 0,
             "route": route,
+            "flight_type": flight.get('flight_type', 'J'), 
             "source_name": "Africana Tracker"
         }
         
@@ -73,13 +74,14 @@ class PhpVmsClient:
             response = requests.post(url, headers=self.headers, json=payload)
             response.raise_for_status()
             res_json = response.json()
-            self.current_pirep_id = res_json['data']['id']
+            
+            self.current_pirep_id = res_json.get('data', {}).get('id')
             log.info(f"Flight prefiled! PIREP ID: {self.current_pirep_id}")
             return self.current_pirep_id
         except Exception as e:
-            logging.error(f"Prefile failed: {e}")
-            if 'response' in locals():
-                logging.error(f"Server Response: {response.text}")
+            log.error(f"Prefile failed: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                log.error(f"Server Response: {e.response.text}")
             return None
 
     def update_acars(self, lat, lon, alt, gs, heading, state="ENR"):
@@ -87,14 +89,32 @@ class PhpVmsClient:
         if not self.current_pirep_id:
             return False
 
+        # Map your tracker's phases to exact phpVMS v7 ACARS statuses
+        v7_states = {
+            "Brd": "boarding",
+            "Txi": "taxi",
+            "Dep": "takeoff",
+            "Enr": "enroute",
+            "App": "approach",
+            "Lnd": "landed",
+            "Pkd": "arrived"
+        }
+        v7_status = v7_states.get(state, "enroute")
+
         url = f"{self.base_url}/api/pireps/{self.current_pirep_id}/acars/position"
+        
+        # phpVMS v7 REQUIRES positions to be inside a list array
         payload = {
-            "lat": lat,
-            "lon": lon,
-            "altitude": alt,
-            "gs": gs,
-            "heading": heading,
-            "state": state
+            "positions": [
+                {
+                    "lat": float(lat),
+                    "lon": float(lon),
+                    "altitude": int(alt),
+                    "gs": int(gs),
+                    "heading": int(heading),
+                    "status": v7_status
+                }
+            ]
         }
 
         try:
@@ -110,16 +130,23 @@ class PhpVmsClient:
             return False
 
         url = f"{self.base_url}/api/pireps/{self.current_pirep_id}/file"
+        
+        # phpVMS expects "notes" instead of "log"
         payload = {
             "flight_time": int(flight_time_min),
-            "fuel_used": fuel_used,
-            "landing_rate": landing_rate,
-            "log": log_text
+            "fuel_used": float(fuel_used),
+            "landing_rate": float(landing_rate),
+            "notes": log_text,
+            "source_name": "Africana Tracker"
         }
 
         try:
             response = requests.post(url, headers=self.headers, json=payload)
-            return response.status_code == 200
+            response.raise_for_status() # Force it to throw an exception if it fails
+            return True
         except Exception as e:
             log.error(f"Filing failed: {e}")
+            # This is crucial: it will print EXACTLY why phpVMS rejected the PIREP
+            if hasattr(e, 'response') and e.response is not None:
+                log.error(f"Server Response: {e.response.text}")
             return False
