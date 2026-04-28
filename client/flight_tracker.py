@@ -184,6 +184,10 @@ class FlightTracker(QObject):
         return self.phase
 
     @property
+    def distance_flown_nm(self) -> float:
+        return self._distance_flown_nm
+
+    @property
     def distance_to_dest_nm(self) -> float:
         if self._last_lat is None or (self.dest_lat == 0 and self.dest_lon == 0):
             return float("inf")  # unknown destination — never triggers distance thresholds

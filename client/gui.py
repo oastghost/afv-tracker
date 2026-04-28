@@ -1572,6 +1572,16 @@ class MainWindow(QMainWindow):
             )
             if pirep_id:
                 self._statusbar.showMessage(f"PIREP prefiled (ID {pirep_id}) — ready to fly.")
+                # Phase changes that fired before the prefile completed had no PIREP id,
+                # so the status push was skipped. Push the current phase now so phpVMS
+                # doesn't stay stuck on "Initiated" and its flight-time counter starts.
+                if self._flight_tracker:
+                    _cur_phase = self._flight_tracker.phase
+                    _cur_status = self._PIREP_STATUS_MAP.get(_cur_phase)
+                    if _cur_status:
+                        def _push_initial_status():
+                            self._vms.update_pirep_status(_cur_status)
+                        threading.Thread(target=_push_initial_status, daemon=True).start()
             else:
                 self._statusbar.showMessage("phpVMS: bid matched but prefile failed — check logs.")
                 self._dot_phpvms.set_connected(False, "phpVMS")
@@ -1684,15 +1694,23 @@ class MainWindow(QMainWindow):
                     self._acars_last_sent = now
                     _lat, _lon, _alt = tel.latitude, tel.longitude, tel.altitude_ft
                     _gs  = tel.groundspeed_kts
-                    # heading_true added in a later revision; fall back to mag if missing
                     _hdg = getattr(tel, "heading_true", tel.heading_mag)
                     _state = self._flight_tracker.phase.vms_code
+                    _sim_time_min = elapsed / 60.0
+                    _distance_nm  = self._flight_tracker.distance_flown_nm
+                    # Push PIREP status on every ACARS tick — acts as automatic retry
+                    # if the phase-change push failed (e.g. transient network error).
+                    _pirep_status = self._PIREP_STATUS_MAP.get(_phase)
 
                     def _send_acars():
                         ok = self._vms.update_acars(
                             lat=_lat, lon=_lon, alt=_alt,
                             gs=_gs, heading=_hdg, state=_state,
+                            sim_time_min=_sim_time_min,
+                            distance_nm=_distance_nm,
                         )
+                        if _pirep_status:
+                            self._vms.update_pirep_status(_pirep_status)
                         self._phpvms_acars_ok.emit(ok)
 
                     threading.Thread(target=_send_acars, daemon=True).start()
@@ -1798,7 +1816,6 @@ class MainWindow(QMainWindow):
         if phase == FlightPhase.PARKED:
             assignment = self._gate_manager.current_assignment
             if assignment and not assignment.fallback:
-                import threading
                 threading.Thread(
                     target=self._gate_manager.release_gate,
                     args=(assignment.airport_icao, assignment.gate_number),

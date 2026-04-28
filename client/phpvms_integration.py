@@ -92,11 +92,14 @@ class PhpVmsClient:
         "Pkd": "arrived",
     }
 
-    def update_acars(self, lat, lon, alt, gs, heading, state="Enr"):
+    def update_acars(self, lat, lon, alt, gs, heading, state="Enr",
+                     sim_time_min=0.0, distance_nm=0.0):
         """
         Send a live position update to the phpVMS live map.
         phpVMS v7 requires positions wrapped in an array under the 'positions' key,
         with a 'status' field (not 'state') containing the v7 state string.
+        sim_time_min: elapsed flight time in minutes (shown as Flight Time on live map).
+        distance_nm: total distance flown in nautical miles.
         """
         if not self.current_pirep_id:
             return False
@@ -111,6 +114,8 @@ class PhpVmsClient:
                     "gs":       int(gs),
                     "heading":  int(heading),
                     "status":   self._V7_STATES.get(state, "enroute"),
+                    "sim_time": round(float(sim_time_min), 1),
+                    "distance": round(float(distance_nm), 2),
                 }
             ]
         }
