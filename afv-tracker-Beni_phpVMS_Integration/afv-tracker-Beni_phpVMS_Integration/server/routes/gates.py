@@ -108,31 +108,21 @@ def assign_gate(
     ac_type  = aircraft_type.upper()
     our_size = _get_aircraft_size(ac_type, db)
 
-    # Check if this pilot already has a gate here — return it only if still usable
+    # Check if this pilot already has a gate here — return it
     if pilot_id:
         existing = db.query(Gate).filter(
             Gate.airport_icao == icao,
             Gate.afv_pilot_id == pilot_id,
         ).first()
         if existing:
-            my_reg = aircraft_reg.strip().upper() if aircraft_reg else None
-            # Gate is still ours if no physical aircraft is blocking it,
-            # or if the parked reg is our own aircraft.
-            physically_clear = (existing.aircraft_reg is None
-                                or existing.aircraft_reg == my_reg)
-            if physically_clear:
-                return GateAssignmentResponse(
-                    airport_icao=icao,
-                    gate_number=existing.gate_name,
-                    terminal=existing.flight_type or "",
-                    gate_size=THEIR_TO_OURS.get(existing.size_category, "M"),
-                    fallback=False,
-                    message="Previously assigned gate.",
-                )
-            # Physical aircraft is blocking our old gate — clear the stale
-            # reservation and fall through to find a free one.
-            existing.afv_pilot_id = None
-            db.commit()
+            return GateAssignmentResponse(
+                airport_icao=icao,
+                gate_number=existing.gate_name,
+                terminal=existing.flight_type or "",
+                gate_size=THEIR_TO_OURS.get(existing.size_category, "M"),
+                fallback=False,
+                message="Previously assigned gate.",
+            )
 
     # Get all gates at this airport
     all_gates = db.query(Gate).filter(Gate.airport_icao == icao).all()

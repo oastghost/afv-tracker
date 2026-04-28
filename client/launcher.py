@@ -34,10 +34,29 @@ from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox
 from PyQt6.QtCore    import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtGui     import QIcon, QPixmap, QPainter, QColor, QBrush, QRadialGradient
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s  %(levelname)-8s  %(message)s",
-                    datefmt="%H:%M:%S")
+_LOG_PATH = Path.home() / ".afv_tracker" / "afv_tracker.log"
+_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(_LOG_PATH, encoding="utf-8"),
+    ],
+)
 log = logging.getLogger(__name__)
+
+
+def _excepthook(exc_type, exc_value, exc_tb):
+    """Log unhandled exceptions to file instead of silently aborting."""
+    import traceback
+    msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    log.critical("UNHANDLED EXCEPTION:\n%s", msg)
+
+
+sys.excepthook = _excepthook
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -47,6 +66,7 @@ STARTUP_KEY     = r"Software\Microsoft\Windows\CurrentVersion\Run"
 STARTUP_NAME    = "AFVTrackerLauncher"
 PYTHON_EXE      = sys.executable
 LAUNCHER_PATH   = Path(__file__).resolve()
+SERVER_PORT     = 8765           # avoid port 8000 which is commonly used by other services
 
 
 # ── Embedded server (uvicorn in a daemon thread) ──────────────────────────────
@@ -109,7 +129,7 @@ def run_server_mode():
     server_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(server_module)
 
-    uvicorn.run(server_module.app, host="127.0.0.1", port=8000, log_level="warning")
+    uvicorn.run(server_module.app, host="127.0.0.1", port=SERVER_PORT, log_level="warning")
 
 
 # ── Server lifecycle (GUI mode) ───────────────────────────────────────────────
@@ -121,8 +141,8 @@ def start_server() -> "subprocess.Popen | None":
     Frozen exe  → spawns itself with --server-mode (exe is both client & server)
     From source → spawns uvicorn directly against the server/ directory
     """
-    if _port_in_use(8000):
-        log.info("Port 8000 already in use — skipping server start.")
+    if _port_in_use(SERVER_PORT):
+        log.info("Port %d already in use — skipping server start.", SERVER_PORT)
         return None
 
     if getattr(sys, "frozen", False):
@@ -130,7 +150,7 @@ def start_server() -> "subprocess.Popen | None":
     else:
         sdir = str(_server_dir())
         cmd = [sys.executable, "-m", "uvicorn", "main:app",
-               "--host", "127.0.0.1", "--port", "8000"]
+               "--host", "127.0.0.1", "--port", str(SERVER_PORT)]
 
     kwargs: dict = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if getattr(sys, "frozen", False):
@@ -164,17 +184,6 @@ def stop_server(proc) -> None:
             except subprocess.TimeoutExpired:
                 proc.kill()
             log.info("Server stopped.")
-    except Exception as exc:
-        log.warning("Error stopping server: %s", exc)
-
-
-def stop_server(server) -> None:
-    """Signal uvicorn to stop and wait briefly for it to shut down."""
-    if server is None:
-        return
-    try:
-        server.should_exit = True
-        log.info("Server shutdown requested.")
     except Exception as exc:
         log.warning("Error stopping server: %s", exc)
 

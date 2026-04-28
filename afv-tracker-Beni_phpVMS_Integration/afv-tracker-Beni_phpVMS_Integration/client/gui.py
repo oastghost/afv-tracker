@@ -13,7 +13,7 @@ from typing import Optional
 import requests
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QThread, pyqtSignal
-from PyQt6.QtGui import QFont, QColor, QPalette, QIcon, QPixmap, QPainter, QPen, QBrush
+from PyQt6.QtGui import QFont, QColor, QPalette, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QFrame, QSplitter, QStatusBar,
@@ -226,7 +226,7 @@ class PilotSetupDialog(QDialog):
         if saved_discord:
             self.discord_edit.setText(saved_discord)
         _field("Discord", self.discord_edit)
-
+        
         self.va_url_edit = QLineEdit()
         self.va_url_edit.setPlaceholderText("https://africanava.ddns.net")
         self.va_url_edit.setText(config.get("VA_URL", "https://africanava.ddns.net"))
@@ -234,7 +234,7 @@ class PilotSetupDialog(QDialog):
 
         self.pilot_key_edit = QLineEdit()
         self.pilot_key_edit.setPlaceholderText("v7 API Key")
-        self.pilot_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.pilot_key_edit.setEchoMode(QLineEdit.EchoMode.Password) # Keep it secret
         self.pilot_key_edit.setText(config.get("Pilot_Key", ""))
         _field("Pilot API Key", self.pilot_key_edit)
 
@@ -368,8 +368,8 @@ class PilotSetupDialog(QDialog):
         f_row.addWidget(btn_ok)
         root.addWidget(footer)
 
-    def get_values(self) -> tuple:
-        """Returns (vatsim_cid, simbrief_id, pilot_name, discord, weight_unit, va_url, pilot_key)."""
+    def get_values(self) -> tuple[str, str, str, str, str]:
+        """Returns (vatsim_cid, simbrief_id, pilot_name, discord, weight_unit)."""
         unit = "KG" if self._btn_kg.isChecked() else "LBS"
         return (
             self.vatsim_edit.text().strip(),
@@ -377,8 +377,8 @@ class PilotSetupDialog(QDialog):
             self.name_edit.text().strip(),
             self.discord_edit.text().strip(),
             unit,
-            self.va_url_edit.text().strip(),
-            self.pilot_key_edit.text().strip(),
+            self.va_url_edit.text().strip(), #=> VA URL
+            self.pilot_key_edit.text().strip() #=> Pilot API Key
         )
 
 
@@ -407,15 +407,17 @@ class StatWidget(QWidget):
         if unit:
             layout.addWidget(self._unit)
 
-    def set_value(self, v: str):
-        self._val.setText(v)
+    def set_value(self, v):
+        # Force conversion to string to avoid PyQt6 TypeErrors
+        self._val.setText(str(v))
 
     def set_unit(self, u: str):
         self._unit.setText(u)
 
     def set_color(self, color: str):
         self._val.setStyleSheet(
-            f"color: {color}; font-size: {self._val.font().pointSize()}px;"
+            # f"color: {color}; font-size: {self._val.font().pointSize()}px;"
+            f"color: {color}; font-size: 20px;"
             f"font-weight: bold; font-family: {FONT_MONO}; background: transparent;"
         )
 
@@ -515,7 +517,7 @@ class BriefingPanel(QFrame):
 
         # Header row
         hdr = QHBoxLayout()
-        hdr.addWidget(_label("FLIGHT BRIEFING", TEXT_PRIMARY, 12, bold=True))
+        hdr.addWidget(_label("SIMBRIEF OFP DATA", TEXT_PRIMARY, 12, bold=True))
         hdr.addStretch()
         self._fetch_btn = QPushButton("FETCH OFP")
         self._fetch_btn.setStyleSheet(
@@ -704,12 +706,17 @@ class SimBriefFetchWorker(QThread):
     success = pyqtSignal(object)   # OFP
     failure = pyqtSignal(str)      # error message
 
-    def __init__(self, pilot_id: str, parent=None):
+    def __init__(self, pilot_id, parent=None):
         super().__init__(parent)
-        self.pilot_id = pilot_id
+        # If config somehow saved a dict, get the string out of it
+        if isinstance(pilot_id, dict):
+            self.pilot_id = str(pilot_id.get('id', ''))
+        else:
+            self.pilot_id = str(pilot_id)
 
     def run(self):
         try:
+            # Now pilot_id is guaranteed to be a string
             ofp = fetch_ofp(self.pilot_id)
             self.success.emit(ofp)
         except SimBriefError as e:
@@ -995,23 +1002,21 @@ class NetworkPanel(QFrame):
             self.setMaximumWidth(260)
             self._toggle_btn.setText("◀")
 
-
-# ── phpVMS Bid Panel ──────────────────────────────────────────────────────────
+# __ phpVMS Interface ───────────────────────────────────────────────────────────────
 
 class BidPanel(QFrame):
-    """Compact panel showing the phpVMS booking matched to the loaded OFP."""
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(
             f"QFrame {{ background: {BG_SECONDARY}; border: 1px solid {BORDER}; border-radius: 6px; }}"
         )
-        self.setFixedHeight(140)
-
+        self.setFixedHeight(140) # Compact height
+        
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(8)
 
+        # Header
         hdr = QHBoxLayout()
         hdr.addWidget(_label("PHPVMS BOOKING", ACCENT_RED, 11, bold=True))
         hdr.addStretch()
@@ -1020,31 +1025,38 @@ class BidPanel(QFrame):
         layout.addLayout(hdr)
         layout.addWidget(_sep())
 
+        # Info Grid
         grid = QGridLayout()
         grid.setSpacing(10)
+        
         self._callsign = StatWidget("ASSIGNED CALLSIGN", "---", "", 16)
-        self._fnum     = StatWidget("FLIGHT NO.", "---", "", 16)
-        self._route    = StatWidget("NETWORK ROUTE", "---", "", 16)
+        self._fnum = StatWidget("FLIGHT NO.", "---", "", 16)
+        self._route = StatWidget("NETWORK ROUTE", "---", "", 16)
         self._aircraft = StatWidget("ASSIGNED ACFT", "---", "", 16)
+
         grid.addWidget(self._callsign, 0, 0)
-        grid.addWidget(self._fnum,     0, 1)
-        grid.addWidget(self._route,    1, 0)
+        grid.addWidget(self._fnum, 0, 1)
+        grid.addWidget(self._route, 1, 0)
         grid.addWidget(self._aircraft, 1, 1)
+        
         layout.addLayout(grid)
 
     def load_bid(self, bid_data: dict):
         flight = bid_data.get('flight', {})
-        acft   = bid_data.get('aircraft', {}) or flight.get('aircraft', {})
-
+        acft = bid_data.get('aircraft', {}) or flight.get('aircraft', {})
+        
+        # Wrapping in str() or using f-strings ensures we send strings to the widgets
         self._id_lbl.setText(f"ID: {bid_data.get('id', '---')}")
-
+        
+        # Flight number is often an int, so we force it to string
         f_num = str(flight.get('flight_number', '---'))
-        icao  = flight.get('airline', {}).get('icao', '')
+        icao = flight.get('airline', {}).get('icao', '')
+        
         self._callsign.set_value(f"{icao}{f_num}")
         self._fnum.set_value(f_num)
-        self._route.set_value(
-            f"{flight.get('dpt_airport_id', '----')} → {flight.get('arr_airport_id', '----')}"
-        )
+        
+        self._route.set_value(f"{flight.get('dpt_airport_id')} → {flight.get('arr_airport_id')}")
+        
         acft_name = f"{acft.get('registration', '---')} ({acft.get('icao', '---')})"
         self._aircraft.set_value(acft_name)
 
@@ -1054,9 +1066,7 @@ class BidPanel(QFrame):
 class MainWindow(QMainWindow):
     # Cross-thread signal — emitted from background fetch thread,
     # dispatched safely to the main thread by Qt's queued connection.
-    _gate_board_ready  = pyqtSignal(str, object)   # (airport_icao, gates_list)
-    _phpvms_bid_ready  = pyqtSignal(object)        # bid dict on success, None on failure
-    _phpvms_acars_ok   = pyqtSignal(bool)          # ACARS update result from background thread
+    _gate_board_ready = pyqtSignal(str, object)   # (airport_icao, gates_list)
 
     def __init__(self):
         super().__init__()
@@ -1080,11 +1090,10 @@ class MainWindow(QMainWindow):
         )
         self._simbrief_worker: Optional[SimBriefFetchWorker] = None
         self._gate_worker: Optional[GateFetchWorker] = None
-
+        
         # phpVMS Integration
         self._vms = PhpVmsClient()
         self._vms_bid_panel = BidPanel()
-        self._acars_last_sent = 0.0  # monotonic timestamp of last successful ACARS push
 
         # Network (multi-pilot WebSocket)
         self._net_client: Optional[NetworkClient] = None
@@ -1096,10 +1105,8 @@ class MainWindow(QMainWindow):
         self._setup_tray()
         self._setup_msfs_watcher()
 
-        # Wire cross-thread signals
+        # Wire gate board signal — safe cross-thread delivery
         self._gate_board_ready.connect(self._apply_gate_board)
-        self._phpvms_bid_ready.connect(self._on_bid_ready)
-        self._phpvms_acars_ok.connect(self._on_acars_result)
 
         # Auto-fetch if credentials already saved
         if self._cfg.get("vatsim_cid"):
@@ -1179,8 +1186,8 @@ class MainWindow(QMainWindow):
 
         self._status_panel = StatusPanel()
         right_layout.addWidget(self._status_panel, stretch=1)
-
-        # phpVMS booking info
+        
+        # Bid Panel
         right_layout.addWidget(self._vms_bid_panel)
 
         # Control buttons
@@ -1231,11 +1238,9 @@ class MainWindow(QMainWindow):
         self._dot_network  = ConnDot("Network")
         self._dot_simbrief = ConnDot("SimBrief")
         self._dot_msfs     = ConnDot("MSFS")
-        self._dot_phpvms   = ConnDot("phpVMS")
         row.addWidget(self._dot_network)
         row.addWidget(self._dot_simbrief)
         row.addWidget(self._dot_msfs)
-        row.addWidget(self._dot_phpvms)
         row.addSpacing(8)
 
         # Pilot info
@@ -1312,19 +1317,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _setup_tray(self):
-        # Draw a circular tray icon: red disc with white "A" initial
+        # Build a simple red square icon for the tray
         pix = QPixmap(32, 32)
-        pix.fill(Qt.GlobalColor.transparent)
-        p = QPainter(pix)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setBrush(QBrush(QColor(ACCENT_RED)))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(0, 0, 32, 32)
-        p.setPen(QPen(QColor("#ffffff")))
-        f = QFont("Arial", 16, QFont.Weight.Bold)
-        p.setFont(f)
-        p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "A")
-        p.end()
+        pix.fill(QColor(ACCENT_RED))
         icon = QIcon(pix)
 
         self._tray = QSystemTrayIcon(icon, self)
@@ -1435,7 +1430,8 @@ class MainWindow(QMainWindow):
                 config.set_value("weight_unit", unit)
                 config.set_value("VA_URL", va_url)
                 config.set_value("Pilot_Key", pilot_key)
-                self._vms.refresh_credentials()
+                
+                self._vms.refresh_credentials() # Update client with new info
                 self._cfg = config.load_config()
                 self._pilot_label.setText(name or vatsim_cid)
                 self._gate_manager.pilot_id   = vatsim_cid
@@ -1444,9 +1440,6 @@ class MainWindow(QMainWindow):
                 self._register_pilot(vatsim_cid, simbrief_id, name, discord)
                 if simbrief_id:
                     self._fetch_simbrief(simbrief_id)
-                elif self._ofp:
-                    # Credentials changed but OFP already loaded — re-try bid fetch
-                    self._on_ofp_loaded(self._ofp)
                 self._start_network_client()
 
     def _register_pilot(self, vatsim_cid: str, simbrief_id: str,
@@ -1520,79 +1513,37 @@ class MainWindow(QMainWindow):
             if gates:
                 self._gate_board_ready.emit(ofp.destination_icao, gates)
         threading.Thread(target=_fetch_board, daemon=True).start()
+        
+        # Check phpVMS for a matching flight
+        bids = self._vms.get_bids()
+        if bids:
+            # Safely look for the bid that matches our SimBrief flight number
+            matching_bid = None
+            for b in bids:
+                # Check for flight number inside the nested 'flight' object
+                f_num = str(b.get('flight', {}).get('flight_number', ''))
+                if f_num and f_num in str(ofp.flight_number):
+                    matching_bid = b
+                    break
+            
+            # Fallback to the first bid if no direct match is found
+            if not matching_bid:
+                matching_bid = bids[0]
 
-        # Fetch phpVMS bids in background — avoids blocking the GUI thread
-        if not self._vms.api_key:
-            self._dot_phpvms.set_connected(False, "phpVMS (no key)")
-            self._statusbar.showMessage("phpVMS: no API key set — open Setup to configure.")
-        else:
-            self._dot_phpvms.set_connected(False, "phpVMS")
-            self._statusbar.showMessage("Fetching phpVMS bid…")
-            flight_number = ofp.flight_number
-            planned_fuel  = ofp.fuel.total_lbs
-            flight_level  = ofp.cruise_altitude
-            route         = ofp.route or ""
-
-            def _fetch_bid():
-                bids = self._vms.get_bids()
-                if not bids:
-                    self._phpvms_bid_ready.emit(None)
-                    return
-                match = next(
-                    (b for b in bids
-                     if str(b.get('flight', {}).get('flight_number', '')) in str(flight_number)),
-                    bids[0],
-                )
-                self._phpvms_bid_ready.emit(match)
-
-            import threading
-            threading.Thread(target=_fetch_bid, daemon=True).start()
+            self._vms_bid_panel.load_bid(matching_bid)
+            
+            # Now call prefile with the nested data
+            f_data = matching_bid.get('flight', {})
+            self._vms.prefile_pirep(
+                bid_data=matching_bid,
+                planned_fuel=ofp.fuel.total_lbs,
+                flight_level=ofp.cruise_altitude,
+                route=ofp.route
+            )
 
     @pyqtSlot(str, object)
     def _apply_gate_board(self, airport: str, gates):
         self._network_panel.load_gate_board(airport, gates)
-
-    @pyqtSlot(object)
-    def _on_bid_ready(self, bid):
-        if bid is None:
-            self._dot_phpvms.set_connected(False, "phpVMS")
-            self._statusbar.showMessage(
-                "phpVMS: no bids found — book a flight on the website first."
-            )
-            return
-        self._dot_phpvms.set_connected(True, "phpVMS")
-        self._vms_bid_panel.load_bid(bid)
-        self._statusbar.showMessage("phpVMS bid matched — prefiling PIREP…")
-        if self._ofp:
-            pirep_id = self._vms.prefile_pirep(
-                bid_data=bid,
-                planned_fuel=self._ofp.fuel.total_lbs,
-                flight_level=self._ofp.cruise_altitude,
-                route=self._ofp.route or "",
-            )
-            if pirep_id:
-                self._statusbar.showMessage(f"PIREP prefiled (ID {pirep_id}) — ready to fly.")
-            else:
-                self._statusbar.showMessage("phpVMS: bid matched but prefile failed — check logs.")
-                self._dot_phpvms.set_connected(False, "phpVMS")
-
-    @pyqtSlot(bool)
-    def _on_acars_result(self, ok: bool):
-        self._dot_phpvms.set_connected(ok, "phpVMS")
-        if not ok:
-            log.warning("phpVMS ACARS update failed — position not sent")
-
-    @pyqtSlot()
-    def _check_pirep_health(self):
-        """Verify the active PIREP is still IN_PROGRESS on phpVMS (runs every 60 s)."""
-        if not self._vms.current_pirep_id:
-            return
-
-        def _health():
-            active = self._vms.is_pirep_active()
-            self._phpvms_acars_ok.emit(active)
-
-        threading.Thread(target=_health, daemon=True).start()
 
     @pyqtSlot(str)
     def _on_ofp_error(self, msg: str):
@@ -1630,12 +1581,6 @@ class MainWindow(QMainWindow):
         self._simconnect_worker.error.connect(self._on_sim_error)
         self._simconnect_worker.start()
 
-        # Periodically verify the PIREP is still IN_PROGRESS on phpVMS.
-        # Catches server-side auto-cancellations that a successful POST can't detect.
-        self._pirep_health_timer = QTimer(self)
-        self._pirep_health_timer.timeout.connect(self._check_pirep_health)
-        self._pirep_health_timer.start(60_000)
-
         self._tracking = True
         self._gate_requested = False
         self._gate_banner.hide_banner()
@@ -1646,9 +1591,6 @@ class MainWindow(QMainWindow):
         if self._simconnect_worker:
             self._simconnect_worker.stop()
             self._simconnect_worker = None
-
-        if hasattr(self, "_pirep_health_timer"):
-            self._pirep_health_timer.stop()
 
         self._tracking = False
         self._track_btn.setText("▶  START TRACKING")
@@ -1669,39 +1611,24 @@ class MainWindow(QMainWindow):
             dist = self._flight_tracker.distance_to_dest_nm
             elapsed = self._flight_tracker.elapsed_seconds
             self._status_panel.update_telemetry(tel, elapsed, dist)
-            # Send live ACARS to phpVMS — throttled, off the main thread.
-            # Use a shorter interval during approach/landing so phpVMS live map
-            # doesn't expire between updates.
-            _phase = self._flight_tracker.phase
-            _acars_interval = (
-                15 if _phase in (FlightPhase.APPROACH, FlightPhase.LANDING,
-                                 FlightPhase.TAXI_IN)
-                else 30
+            
+            # ── Send live ACARS to phpVMS ──
+            self._vms.update_acars(
+                lat=tel.latitude,
+                lon=tel.longitude,
+                alt=tel.altitude_ft,
+                gs=tel.groundspeed_kts,
+                heading=tel.heading_mag, 
+                # Safely map the phase using your helper method
+                state=self._get_vms_phase(self._flight_tracker.phase) 
             )
-            now = time.monotonic()
-            if self._vms.current_pirep_id and now - self._acars_last_sent >= _acars_interval:
-                try:
-                    self._acars_last_sent = now
-                    _lat, _lon, _alt = tel.latitude, tel.longitude, tel.altitude_ft
-                    _gs  = tel.groundspeed_kts
-                    # heading_true added in a later revision; fall back to mag if missing
-                    _hdg = getattr(tel, "heading_true", tel.heading_mag)
-                    _state = self._flight_tracker.phase.vms_code
-
-                    def _send_acars():
-                        ok = self._vms.update_acars(
-                            lat=_lat, lon=_lon, alt=_alt,
-                            gs=_gs, heading=_hdg, state=_state,
-                        )
-                        self._phpvms_acars_ok.emit(ok)
-
-                    threading.Thread(target=_send_acars, daemon=True).start()
-                except Exception:
-                    log.exception("ACARS update scheduling failed")
+            
         # Broadcast position to other pilots on the network
         self._broadcast_own_telemetry(tel)
-        # Persist full telemetry to the backend (fire-and-forget)
+        
+        # Persist full telemetry to the backend
         if self._tracking and self._ofp:
+            import threading
             threading.Thread(target=self._post_telemetry, args=(tel,), daemon=True).start()
 
     def _post_telemetry(self, tel: Telemetry):
@@ -1753,38 +1680,10 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # phpVMS v7 PirepStatus codes — must be set via PUT /api/pireps/{id}.
-    # ACARS position updates do NOT update this field automatically.
-    _PIREP_STATUS_MAP = {
-        FlightPhase.PRE_FLIGHT: "BRD",
-        FlightPhase.TAXI_OUT:   "DEP",
-        FlightPhase.TAKEOFF:    "DEP",
-        FlightPhase.CLIMB:      "ENR",
-        FlightPhase.CRUISE:     "ENR",
-        FlightPhase.DESCENT:    "ENR",
-        FlightPhase.APPROACH:   "APP",
-        FlightPhase.LANDING:    "LND",
-        FlightPhase.TAXI_IN:    "LND",
-        FlightPhase.PARKED:     "ARR",
-    }
-
     @pyqtSlot(object)
     def _on_phase_changed(self, phase: FlightPhase):
         self._status_panel.update_phase(phase)
         self._statusbar.showMessage(f"Phase: {phase.value}")
-        # Force an immediate ACARS update on approach so phpVMS gets the status
-        # without waiting up to 30 s for the next scheduled tick.
-        if phase == FlightPhase.APPROACH:
-            self._acars_last_sent = 0.0
-        # Push the phase status to phpVMS explicitly (ACARS positions don't do this).
-        try:
-            status_code = self._PIREP_STATUS_MAP.get(phase)
-            if status_code and self._vms.current_pirep_id:
-                def _push_status():
-                    self._vms.update_pirep_status(status_code)
-                threading.Thread(target=_push_status, daemon=True).start()
-        except Exception:
-            log.exception("PIREP status push failed for phase %s", phase)
 
         # Reopened mid-flight past approach — gate was released on disconnect,
         # so request a fresh one now.
@@ -1880,15 +1779,17 @@ class MainWindow(QMainWindow):
             f"{(int(data['flight_time_sec'])%3600)//60:02d}m\n"
             f"Landing rate: {data.get('landing_rate_fpm') or 'N/A'} fpm"
         )
-
-        # File the PIREP on phpVMS
+        
+        # File the report on Africana phpVMS
         flight_time_mins = int(data['flight_time_sec']) // 60
         fuel_used = data.get('fuel_used_lbs', 0)
+        
+        # Match the keywords to your PhpVmsClient.file_pirep definition
         success = self._vms.file_pirep(
             flight_time_min=flight_time_mins,
             fuel_used=fuel_used,
             landing_rate=data.get('landing_rate_fpm', 0),
-            log_text=f"Landing Rate: {data.get('landing_rate_fpm')} FPM",
+            log_text=f"Landing Rate: {data.get('landing_rate_fpm')} FPM"
         )
         if success:
             log.info("PIREP filed successfully on Africana Virtual Airways.")
@@ -2012,6 +1913,22 @@ class MainWindow(QMainWindow):
             self._net_client.stop()
             self._net_client.wait(2000)
         QApplication.quit()
+        
+    def _get_vms_phase(self, phase: FlightPhase) -> str:
+        """Maps internal FlightPhase to phpVMS v7 ACARS states."""
+        mapping = {
+            FlightPhase.PRE_FLIGHT: "Brd",
+            FlightPhase.TAXI_OUT:   "Txi",
+            FlightPhase.TAKEOFF:    "Dep",
+            FlightPhase.CLIMB:      "Enr",
+            FlightPhase.CRUISE:     "Enr",
+            FlightPhase.DESCENT:    "Enr",
+            FlightPhase.APPROACH:   "App",
+            FlightPhase.LANDING:    "Lnd",
+            FlightPhase.TAXI_IN:    "Lnd",
+            FlightPhase.PARKED:     "Pkd",
+        }
+        return mapping.get(phase, "Enr")
 
 
 # ── Airport coordinates (lat, lon) for distance calc ──────────────────────────
@@ -2072,8 +1989,4 @@ _AIRPORT_COORDS: dict[str, tuple[float, float]] = {
     "ZBAA": ( 40.0801, 116.5846),  # Beijing Capital
     # ── Turkey ───────────────────────────────────────────────────────────────
     "LTFM": ( 41.2753,  28.7519),  # Istanbul
-    # ── North America ────────────────────────────────────────────────────────
-    "KBOS": ( 42.3656, -71.0096),  # Boston Logan
-    # ── Europe ───────────────────────────────────────────────────────────────
-    "LPPT": ( 38.7813,  -9.1359),  # Lisbon Humberto Delgado
 }
