@@ -1072,7 +1072,7 @@ class MainWindow(QMainWindow):
         self._simconnect_worker: Optional[SimConnectWorker] = None
         self._flight_tracker: Optional[FlightTracker] = None
         self._gate_manager = GateManager(
-            self._cfg.get("server_url", "http://localhost:8000"),
+            self._cfg.get("server_url", "http://localhost:8765"),
             pilot_id=self._cfg.get("vatsim_cid", ""),
             pilot_name=self._cfg.get("pilot_name", ""),
         )
@@ -1451,7 +1451,7 @@ class MainWindow(QMainWindow):
                         name: str, discord: str):
         """POST pilot details to the server (create or update)."""
         import threading, requests as req
-        server = config.get("server_url", "http://localhost:8000")
+        server = config.get("server_url", "http://localhost:8765")
         payload = {
             "vatsim_cid":  vatsim_cid,
             "simbrief_id": simbrief_id or None,
@@ -1876,7 +1876,7 @@ class MainWindow(QMainWindow):
 
     def _post_flight_log(self, payload: dict):
         import threading, requests as req
-        server = config.get("server_url", "http://localhost:8000")
+        server = config.get("server_url", "http://localhost:8765")
         def _post():
             try:
                 req.post(f"{server}/api/flights/complete", json=payload, timeout=10)
@@ -1896,7 +1896,7 @@ class MainWindow(QMainWindow):
             self._net_client.stop()
             self._net_client.wait(2000)
 
-        server = config.get("server_url", "http://localhost:8000")
+        server = config.get("server_url", "http://localhost:8765")
         self._net_client = NetworkClient(server_url=server, pilot_id=pid, parent=self)  # pid = vatsim_cid
         self._net_client.connected.connect(self._on_net_connected)
         self._net_client.disconnected.connect(self._on_net_disconnected)
