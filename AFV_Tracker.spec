@@ -12,7 +12,13 @@ block_cipher = None
 a = Analysis(
     ['client/launcher.py'],
     pathex=['client'],          # lets PyInstaller resolve local imports (gui, config, …)
-    binaries=[],
+    binaries=[
+        # SimConnect.dll is loaded via __file__ path inside SimConnect.py.
+        # PyInstaller doesn't detect it automatically from hiddenimports —
+        # it must be explicitly placed in the SimConnect/ sub-directory so
+        # the path `<_MEIPASS>/SimConnect/SimConnect.dll` resolves correctly.
+        ('.venv/Lib/site-packages/SimConnect/SimConnect.dll', 'SimConnect'),
+    ],
     datas=[
         # Bundle the entire server package so the frozen exe can run it
         ('server/*.py',          'server'),

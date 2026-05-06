@@ -5,6 +5,29 @@ import config
 log = logging.getLogger(__name__)
 
 
+def _to_nm(value) -> float:
+    """
+    Safely extract a nautical-mile float from a phpVMS distance value.
+    phpVMS may return distance as:
+      - a plain int/float                → use directly
+      - a dict Distance object           → prefer 'nmi'/'nm', fall back to any key
+      - None / missing                   → 0.0
+    """
+    if not value:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, dict):
+        for key in ('nmi', 'nm', 'nautical_miles', 'value', 'miles', 'km'):
+            v = value.get(key)
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    continue
+    return 0.0
+
+
 class PhpVmsClient:
     def __init__(self):
         self.current_pirep_id = None
@@ -66,8 +89,8 @@ class PhpVmsClient:
             "flight_number":      flight.get('flight_number'),
             "dpt_airport_id":     flight.get('dpt_airport_id'),
             "arr_airport_id":     flight.get('arr_airport_id'),
-            "planned_flight_time": flight.get('flight_time') or 0,
-            "planned_distance":   float(flight.get('distance') or 0),
+            "planned_flight_time": int(flight.get('flight_time') or 0),
+            "planned_distance":   _to_nm(flight.get('distance')),
             "block_fuel":         planned_fuel,
             "level":              int(flight_level) if flight_level else 0,
             "route":              route,
