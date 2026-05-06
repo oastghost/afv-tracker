@@ -10,8 +10,6 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-import requests
-
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPalette, QIcon, QPixmap, QPainter, QPen, QBrush
 from PyQt6.QtWidgets import (
@@ -935,7 +933,7 @@ class NetworkPanel(QFrame):
         for row_idx, g in enumerate(gates):
             gnum  = g.get("gate_number", "?")
             avail = g.get("is_available", True)
-            size  = g.get("gate_size", "M")
+            size  = g.get("gate_size", "Medium")
 
             num_lbl = _label(f"{gnum}", TEXT_PRIMARY, 10, font=FONT_MONO)
             size_lbl = _label(size, TEXT_SECONDARY, 9)
@@ -1696,21 +1694,25 @@ class MainWindow(QMainWindow):
                     _gs  = tel.groundspeed_kts
                     _hdg = getattr(tel, "heading_true", tel.heading_mag)
                     _state = self._flight_tracker.phase.vms_code
-                    _sim_time_min = elapsed / 60.0
-                    _distance_nm  = self._flight_tracker.distance_flown_nm
+                    _distance_nm     = self._flight_tracker.distance_flown_nm
+                    _flight_time_min = elapsed / 60.0
                     # Push PIREP status on every ACARS tick — acts as automatic retry
                     # if the phase-change push failed (e.g. transient network error).
                     _pirep_status = self._PIREP_STATUS_MAP.get(_phase)
 
+                    _vs = int(getattr(tel, "vertical_speed_fpm", 0) or 0)
+
                     def _send_acars():
                         ok = self._vms.update_acars(
                             lat=_lat, lon=_lon, alt=_alt,
-                            gs=_gs, heading=_hdg, state=_state,
-                            sim_time_min=_sim_time_min,
-                            distance_nm=_distance_nm,
+                            gs=_gs, heading=_hdg, state=_state, vs=_vs,
                         )
                         if _pirep_status:
-                            self._vms.update_pirep_status(_pirep_status)
+                            self._vms.update_pirep_status(
+                                _pirep_status,
+                                flight_time_min=_flight_time_min,
+                                distance_nm=_distance_nm,
+                            )
                         self._phpvms_acars_ok.emit(ok)
 
                     threading.Thread(target=_send_acars, daemon=True).start()
@@ -1718,72 +1720,22 @@ class MainWindow(QMainWindow):
                     log.exception("ACARS update scheduling failed")
         # Broadcast position to other pilots on the network
         self._broadcast_own_telemetry(tel)
-        # Persist full telemetry to the backend (fire-and-forget)
-        if self._tracking and self._ofp:
-            threading.Thread(target=self._post_telemetry, args=(tel,), daemon=True).start()
 
-    def _post_telemetry(self, tel: Telemetry):
-        cfg = config.load_config()
-        server = cfg.get("server_url", "http://localhost:8000").rstrip("/")
-        phase = self._flight_tracker.phase.value if self._flight_tracker else "UNKNOWN"
-        payload = {
-            "vatsim_cid": cfg.get("vatsim_cid", ""),
-            "flight_number": self._ofp.flight_number if self._ofp else None,
-            "phase": phase,
-            "latitude": tel.latitude,
-            "longitude": tel.longitude,
-            "altitude_ft": tel.altitude_ft,
-            "heading_mag": tel.heading_mag,
-            "pitch_deg": tel.pitch_deg,
-            "bank_deg": tel.bank_deg,
-            "groundspeed_kts": tel.groundspeed_kts,
-            "ias_kts": tel.ias_kts,
-            "tas_kts": tel.tas_kts,
-            "mach": tel.mach,
-            "vertical_speed_fpm": tel.vertical_speed_fpm,
-            "eng1_on": float(tel.engine_on),
-            "eng2_on": float(tel.eng2_on),
-            "eng3_on": float(tel.eng3_on),
-            "eng4_on": float(tel.eng4_on),
-            "eng1_n1": tel.eng1_n1,
-            "eng2_n1": tel.eng2_n1,
-            "eng3_n1": tel.eng3_n1,
-            "eng4_n1": tel.eng4_n1,
-            "fuel_lbs": tel.fuel_lbs,
-            "fuel_qty_gal": tel.fuel_qty_gal,
-            "autopilot_on": float(tel.autopilot_on),
-            "autopilot_alt_ft": tel.autopilot_alt_ft,
-            "autopilot_hdg": tel.autopilot_hdg,
-            "flaps_pct": tel.flaps_pct,
-            "gear_down": float(tel.gear_down),
-            "transponder": tel.transponder,
-            "parking_brake": float(tel.parking_brake),
-            "lights_strobe": float(tel.lights_strobe),
-            "lights_landing": float(tel.lights_landing),
-            "wind_speed_kts": tel.wind_speed_kts,
-            "wind_dir_deg": tel.wind_dir_deg,
-            "oat_celsius": tel.oat_celsius,
-            "qnh_mb": tel.qnh_mb,
-            "timestamp": tel.timestamp,
-        }
-        try:
-            requests.post(f"{server}/api/flights/track", json=payload, timeout=5)
-        except Exception:
-            pass
-
-    # phpVMS v7 PirepStatus codes — must be set via PUT /api/pireps/{id}.
-    # ACARS position updates do NOT update this field automatically.
+    # phpVMS v7 PirepStatus codes (see app/Models/Enums/PirepStatus.php).
+    # Must be set via PUT /api/pireps/{id} — ACARS positions do NOT advance this.
+    # Valid: INI BST RDT PBT OFB DIR DIC GRT TXI TOF ICL TKO ENR DV TEN APR FIN
+    #        LDG LAN ONB ARR DX EMG PSD
     _PIREP_STATUS_MAP = {
-        FlightPhase.PRE_FLIGHT: "BRD",
-        FlightPhase.TAXI_OUT:   "DEP",
-        FlightPhase.TAKEOFF:    "DEP",
-        FlightPhase.CLIMB:      "ENR",
-        FlightPhase.CRUISE:     "ENR",
-        FlightPhase.DESCENT:    "ENR",
-        FlightPhase.APPROACH:   "APP",
-        FlightPhase.LANDING:    "LND",
-        FlightPhase.TAXI_IN:    "LND",
-        FlightPhase.PARKED:     "ARR",
+        FlightPhase.PRE_FLIGHT: "BST",   # BOARDING
+        FlightPhase.TAXI_OUT:   "TXI",   # TAXI
+        FlightPhase.TAKEOFF:    "TOF",   # TAKEOFF
+        FlightPhase.CLIMB:      "ICL",   # INIT_CLIM
+        FlightPhase.CRUISE:     "ENR",   # ENROUTE
+        FlightPhase.DESCENT:    "ENR",   # ENROUTE (no separate descent code)
+        FlightPhase.APPROACH:   "TEN",   # APPROACH
+        FlightPhase.LANDING:    "LDG",   # LANDING
+        FlightPhase.TAXI_IN:    "LAN",   # LANDED
+        FlightPhase.PARKED:     "ARR",   # ARRIVED (file_pirep also sets this)
     }
 
     @pyqtSlot(object)
@@ -1900,15 +1852,27 @@ class MainWindow(QMainWindow):
 
         # File the PIREP on phpVMS
         flight_time_mins = int(data['flight_time_sec']) // 60
-        fuel_used = data.get('fuel_used_lbs', 0)
+        fuel_used        = data.get('fuel_used_lbs', 0) or 0
+        distance_nm      = data.get('distance_flown_nm', 0) or 0
+        landing_rate     = data.get('landing_rate_fpm') or 0
         success = self._vms.file_pirep(
             flight_time_min=flight_time_mins,
             fuel_used=fuel_used,
-            landing_rate=data.get('landing_rate_fpm', 0),
-            log_text=f"Landing Rate: {data.get('landing_rate_fpm')} FPM",
+            distance_nm=distance_nm,
+            landing_rate=landing_rate,
+            log_text=(
+                f"Filed by Africana Tracker.\n"
+                f"Block time: {flight_time_mins // 60:02d}:{flight_time_mins % 60:02d}\n"
+                f"Distance flown: {distance_nm:.1f} nm\n"
+                f"Fuel used: {fuel_used:.0f} lbs\n"
+                f"Landing rate: {landing_rate:.0f} fpm"
+            ),
         )
         if success:
             log.info("PIREP filed successfully on Africana Virtual Airways.")
+            self._statusbar.showMessage("PIREP filed on phpVMS.")
+        else:
+            self._statusbar.showMessage("PIREP filing failed — see logs.")
 
     def _post_flight_log(self, payload: dict):
         import threading, requests as req

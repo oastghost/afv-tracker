@@ -9,8 +9,9 @@ A gate is unavailable when EITHER:
   - gates.aircraft_reg IS NOT NULL  (real aircraft physically parked there), OR
   - gates.afv_pilot_id IS NOT NULL  (an AFV pilot has reserved it)
 
-Size mapping (their enum -> our S/M/L/H):
-  Light  -> S  |  Medium -> M  |  Heavy -> L  |  Jumbo -> H
+Gate/aircraft size categories (from the DB ENUM):
+  Light | Medium | Heavy | Jumbo
+These are used directly throughout — no translation layer.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -25,40 +26,56 @@ router = APIRouter(prefix="/api/gates", tags=["gates"])
 
 # ── Size helpers ───────────────────────────────────────────────────────────────
 
-THEIR_TO_OURS = {"Light": "S", "Medium": "M", "Heavy": "L", "Jumbo": "H"}
-OURS_TO_THEIRS = {v: k for k, v in THEIR_TO_OURS.items()}
-
+# Maps aircraft ICAO type → DB size category (fallback when not in the aircrafts table)
 AIRCRAFT_TYPE_SIZE: dict[str, str] = {
-    "AT76": "S", "AT75": "S", "DH8D": "S", "DH8C": "S",
-    "E145": "S", "E135": "S", "SF34": "S", "C208": "S", "C207": "S",
-    "B737": "M", "B738": "M", "B739": "M", "B73G": "M",
-    "A318": "M", "A319": "M", "A320": "M", "A321": "M",
-    "E190": "M", "E195": "M", "CRJ9": "M", "CRJ7": "M",
-    "B752": "M", "B753": "M",
-    "MD11": "L", "B787": "L", "B788": "L", "B789": "L", "B78X": "L",
-    "B763": "L", "B764": "L", "B762": "L",
-    "A330": "L", "A332": "L", "A333": "L", "A339": "L",
-    "A350": "L", "A359": "L", "A35K": "L", "A346": "L",
-    "B77W": "L", "B773": "L", "B772": "L",
-    "B744": "H", "B74S": "H", "A388": "H", "A380": "H",
+    # Light (turboprops / small piston)
+    "AT76": "Light", "AT75": "Light", "DH8D": "Light", "DH8C": "Light",
+    "DH8B": "Light", "DH8A": "Light",
+    "E145": "Light", "E135": "Light", "SF34": "Light",
+    "C208": "Light", "C207": "Light", "C182": "Light",
+    "PC12": "Light", "TBM9": "Light", "BE9L": "Light", "BE20": "Light",
+    # Medium (narrowbody)
+    "B737": "Medium", "B738": "Medium", "B739": "Medium", "B73G": "Medium",
+    "B733": "Medium", "B734": "Medium", "B735": "Medium",
+    "B752": "Medium", "B753": "Medium",
+    "A318": "Medium", "A319": "Medium", "A320": "Medium", "A321": "Medium",
+    "E170": "Medium", "E190": "Medium", "E195": "Medium",
+    "E75L": "Medium", "E75S": "Medium",
+    "CRJ9": "Medium", "CRJ7": "Medium",
+    # Heavy (widebody)
+    "B787": "Heavy", "B788": "Heavy", "B789": "Heavy", "B78X": "Heavy",
+    "B763": "Heavy", "B764": "Heavy", "B762": "Heavy",
+    "A330": "Heavy", "A332": "Heavy", "A333": "Heavy", "A339": "Heavy",
+    "A350": "Heavy", "A359": "Heavy", "A35K": "Heavy",
+    "A342": "Heavy", "A343": "Heavy", "A346": "Heavy",
+    "B77W": "Heavy", "B773": "Heavy", "B772": "Heavy",
+    "MD11": "Heavy",
+    # Jumbo
+    "B744": "Jumbo", "B74S": "Jumbo", "B74D": "Jumbo",
+    "A388": "Jumbo", "A380": "Jumbo",
+    "A124": "Jumbo", "C17":  "Jumbo",
 }
 
-SIZE_ORDER = {"S": 0, "M": 1, "L": 2, "H": 3}
+# Ordered smallest → largest; used for compatibility fallback logic
+SIZE_ORDER = {"Light": 0, "Medium": 1, "Heavy": 2, "Jumbo": 3}
 
 
 def _get_aircraft_size(aircraft_type: str, db: Session) -> str:
+    """Return the DB size category for an aircraft type.
+    Prefers the aircrafts table; falls back to the static map; defaults to Medium."""
     ac = db.query(Aircraft).filter(
         Aircraft.aircraft_type == aircraft_type.upper()
     ).first()
-    if ac:
-        return THEIR_TO_OURS.get(ac.aircraft_category, "M")
-    return AIRCRAFT_TYPE_SIZE.get(aircraft_type.upper(), "M")
+    if ac and ac.aircraft_category in SIZE_ORDER:
+        return ac.aircraft_category
+    return AIRCRAFT_TYPE_SIZE.get(aircraft_type.upper(), "Medium")
 
 
-def _compatible_their_sizes(our_size: str) -> list[str]:
-    idx = SIZE_ORDER.get(our_size, 1)
-    return [OURS_TO_THEIRS[s] for s, i in SIZE_ORDER.items()
-            if i >= idx and s in OURS_TO_THEIRS]
+def _compatible_sizes(aircraft_size: str) -> list[str]:
+    """Return all gate size categories that can accommodate this aircraft
+    (i.e. same size or larger)."""
+    idx = SIZE_ORDER.get(aircraft_size, 1)
+    return [s for s, i in SIZE_ORDER.items() if i >= idx]
 
 
 def _gate_available(gate: Gate) -> bool:
@@ -72,7 +89,7 @@ def _gate_to_response(gate: Gate) -> GateResponse:
         airport_icao=gate.airport_icao,
         gate_number=gate.gate_name,
         terminal=gate.flight_type or "",
-        gate_size=THEIR_TO_OURS.get(gate.size_category, "M"),
+        gate_size=gate.size_category,
         is_available=_gate_available(gate),
     )
 
@@ -99,16 +116,16 @@ def list_gates(airport_icao: str, db: Session = Depends(get_db)):
 def assign_gate(
     airport_icao:  str,
     aircraft_type: str = Query(...),
-    pilot_id:      str = Query(default=""),   # VATSIM CID
+    pilot_id:      str = Query(default=""),
     pilot_name:    str = Query(default=""),
-    aircraft_reg:  str = Query(default=""),   # registration from SimBrief (e.g. C9-AIA)
+    aircraft_reg:  str = Query(default=""),
     db: Session = Depends(get_db),
 ):
     icao     = airport_icao.upper()
     ac_type  = aircraft_type.upper()
-    our_size = _get_aircraft_size(ac_type, db)
+    ac_size  = _get_aircraft_size(ac_type, db)
 
-    # Check if this pilot already has a gate here — return it only if still usable
+    # Check if this pilot already has a gate here — return it if still usable
     if pilot_id:
         existing = db.query(Gate).filter(
             Gate.airport_icao == icao,
@@ -116,8 +133,6 @@ def assign_gate(
         ).first()
         if existing:
             my_reg = aircraft_reg.strip().upper() if aircraft_reg else None
-            # Gate is still ours if no physical aircraft is blocking it,
-            # or if the parked reg is our own aircraft.
             physically_clear = (existing.aircraft_reg is None
                                 or existing.aircraft_reg == my_reg)
             if physically_clear:
@@ -125,29 +140,26 @@ def assign_gate(
                     airport_icao=icao,
                     gate_number=existing.gate_name,
                     terminal=existing.flight_type or "",
-                    gate_size=THEIR_TO_OURS.get(existing.size_category, "M"),
+                    gate_size=existing.size_category,
                     fallback=False,
                     message="Previously assigned gate.",
                 )
-            # Physical aircraft is blocking our old gate — clear the stale
-            # reservation and fall through to find a free one.
+            # Physical aircraft blocking our old gate — clear and find a new one
             existing.afv_pilot_id = None
             db.commit()
 
-    # Get all gates at this airport
     all_gates = db.query(Gate).filter(Gate.airport_icao == icao).all()
 
     # Try exact size first
-    their_exact = OURS_TO_THEIRS.get(our_size, "Medium")
     gate = next(
         (g for g in all_gates
-         if g.size_category == their_exact and _gate_available(g)),
+         if g.size_category == ac_size and _gate_available(g)),
         None
     )
 
     fallback = False
     if not gate:
-        compat = _compatible_their_sizes(our_size)
+        compat = _compatible_sizes(ac_size)
         gate = next(
             (g for g in all_gates
              if g.size_category in compat and _gate_available(g)),
@@ -161,22 +173,20 @@ def assign_gate(
             airport_icao=icao,
             gate_number="CONTACT GROUND",
             terminal="",
-            gate_size=our_size,
+            gate_size=ac_size,
             fallback=True,
             message="No gates available. Park at own discretion and advise on Discord.",
         )
 
-    # Lock the gate.
-    # afv_pilot_id must be non-NULL after this block or the gate stays unlocked
-    # and can be double-assigned. Use reg or a sentinel when pilot_id is absent.
-    reg = aircraft_reg.strip().upper() if aircraft_reg else None
+    # Lock the gate
+    reg   = aircraft_reg.strip().upper() if aircraft_reg else None
     _lock = pilot_id.strip() if pilot_id else None
     gate.afv_pilot_id = _lock or reg or f"LOCK:{icao}:{gate.gate_name}"
 
     if reg:
         ac_in_db = db.query(Aircraft).filter(Aircraft.aircraft_reg == reg).first()
         if ac_in_db:
-            gate.aircraft_reg = reg   # locks via the virtual occupied column
+            gate.aircraft_reg = reg
         else:
             import logging
             logging.getLogger(__name__).warning(
@@ -185,7 +195,7 @@ def assign_gate(
 
     db.commit()
 
-    msg = (f"No {their_exact} gate available; assigned {gate.size_category} gate instead."
+    msg = (f"No {ac_size} gate available; assigned {gate.size_category} gate instead."
            if fallback else None)
 
     try:
@@ -195,19 +205,19 @@ def assign_gate(
                 "airport":     icao,
                 "gate_number": gate.gate_name,
                 "terminal":    gate.flight_type or "",
-                "gate_size":   THEIR_TO_OURS.get(gate.size_category, "M"),
+                "gate_size":   gate.size_category,
                 "pilot_id":    pilot_id,
                 "pilot_name":  pilot_name or pilot_id,
             },
         })
     except Exception:
-        pass  # broadcast failure must never break the gate assignment
+        pass
 
     return GateAssignmentResponse(
         airport_icao=icao,
         gate_number=gate.gate_name,
         terminal=gate.flight_type or "",
-        gate_size=THEIR_TO_OURS.get(gate.size_category, "M"),
+        gate_size=gate.size_category,
         fallback=fallback,
         message=msg,
     )
@@ -228,7 +238,6 @@ def release_gate(
         raise HTTPException(status_code=404,
                             detail="No AFV reservation found for this gate.")
 
-    # Clear both the AFV reservation tag and the physical aircraft_reg lock
     gate.afv_pilot_id = None
     gate.aircraft_reg = None
     db.commit()

@@ -50,6 +50,11 @@ class PhpVmsClient:
         """
         Prefile a PIREP from a phpVMS bid.
         Uses flight_id (not bid_id) so phpVMS links the PIREP to the schedule.
+
+        phpVMS v7 PrefileRequest (app/Http/Requests/Acars/PrefileRequest.php):
+          Required: airline_id, aircraft_id, flight_number,
+                    dpt_airport_id, arr_airport_id, source_name
+          Fuel field is `block_fuel` (NOT `planned_fuel` — that does not exist).
         """
         url = f"{self.base_url}/api/pireps/prefile"
         flight = bid_data.get('flight', {})
@@ -62,7 +67,8 @@ class PhpVmsClient:
             "dpt_airport_id":     flight.get('dpt_airport_id'),
             "arr_airport_id":     flight.get('arr_airport_id'),
             "planned_flight_time": flight.get('flight_time', 0),
-            "planned_fuel":       planned_fuel,
+            "planned_distance":   flight.get('distance', 0),
+            "block_fuel":         planned_fuel,
             "level":              int(flight_level) if flight_level else 0,
             "route":              route,
             "flight_type":        flight.get('flight_type', 'J'),
@@ -81,7 +87,10 @@ class PhpVmsClient:
                 log.error("Server response: %s", e.response.text)
             return None
 
-    # Internal phase codes → phpVMS v7 ACARS status strings
+    # Internal phase codes → phpVMS v7 ACARS position 'status' strings.
+    # These are stored on the Acars row (free-form string per PositionRequest.php
+    # — phpVMS does NOT validate the value). They're only used for the live map
+    # phase label; the real PIREP state is set via update_pirep_status().
     _V7_STATES = {
         "Brd": "boarding",
         "Txi": "taxi",
@@ -93,32 +102,33 @@ class PhpVmsClient:
     }
 
     def update_acars(self, lat, lon, alt, gs, heading, state="Enr",
-                     sim_time_min=0.0, distance_nm=0.0):
+                     vs=None):
         """
         Send a live position update to the phpVMS live map.
-        phpVMS v7 requires positions wrapped in an array under the 'positions' key,
-        with a 'status' field (not 'state') containing the v7 state string.
-        sim_time_min: elapsed flight time in minutes (shown as Flight Time on live map).
-        distance_nm: total distance flown in nautical miles.
+
+        phpVMS v7 PositionRequest (app/Http/Requests/Acars/PositionRequest.php):
+          Required: lat, lon, positions[]
+          Accepted per position: lat, lon, altitude, altitude_msl, altitude_agl,
+            heading, vs, gs, ias, transponder, autopilot, fuel, fuel_flow,
+            status (free-form), log, sim_time, created_at
+          NOTE: per-position `distance` is NOT accepted — cumulative distance
+          must be pushed via update_pirep_status() onto the PIREP itself.
         """
         if not self.current_pirep_id:
             return False
 
         url = f"{self.base_url}/api/pireps/{self.current_pirep_id}/acars/position"
-        payload = {
-            "positions": [
-                {
-                    "lat":      float(lat),
-                    "lon":      float(lon),
-                    "altitude": int(alt),
-                    "gs":       int(gs),
-                    "heading":  int(heading),
-                    "status":   self._V7_STATES.get(state, "enroute"),
-                    "sim_time": round(float(sim_time_min), 1),
-                    "distance": round(float(distance_nm), 2),
-                }
-            ]
+        position = {
+            "lat":      float(lat),
+            "lon":      float(lon),
+            "altitude": int(alt),
+            "gs":       int(gs),
+            "heading":  int(heading) % 360,
+            "status":   self._V7_STATES.get(state, "enroute"),
         }
+        if vs is not None:
+            position["vs"] = int(vs)
+        payload = {"positions": [position]}
 
         try:
             r = requests.post(url, headers=self.headers, json=payload, timeout=5)
@@ -127,25 +137,38 @@ class PhpVmsClient:
             log.debug("ACARS update failed: %s", e)
             return False
 
-    def update_pirep_status(self, status_code: str) -> bool:
+    def update_pirep_status(self, status_code: str,
+                            flight_time_min: float = None,
+                            distance_nm: float = None) -> bool:
         """
-        Update the PIREP's flight-phase status via PUT /api/pireps/{id}.
+        Update the PIREP's status, flight time, and distance via PUT /api/pireps/{id}.
 
-        phpVMS v7 does NOT update the PIREP status automatically from ACARS
-        position data — positions are telemetry-only.  The status field must
-        be set explicitly.  Valid codes: INI BRD DEP ENR APP LND ARR
+        phpVMS v7 does NOT update status or accumulate flight stats from ACARS
+        positions — these must be pushed explicitly.
+        Valid PirepStatus codes (app/Models/Enums/PirepStatus.php):
+          INI BST RDT PBT OFB DIR DIC GRT TXI TOF ICL TKO ENR DV TEN APR FIN
+          LDG LAN ONB ARR DX EMG PSD
+        flight_time_min: elapsed flight time in minutes (updates live map display).
+        distance_nm: total distance flown in nautical miles (updates live map display).
         """
         if not self.current_pirep_id:
             return False
+        payload = {"status": status_code}
+        if flight_time_min is not None:
+            payload["flight_time"] = int(flight_time_min)
+        if distance_nm is not None:
+            payload["distance"] = round(float(distance_nm), 2)
         try:
             r = requests.put(
                 f"{self.base_url}/api/pireps/{self.current_pirep_id}",
                 headers=self.headers,
-                json={"status": status_code},
+                json=payload,
                 timeout=5,
             )
             if r.status_code == 200:
-                log.info("PIREP %s status → %s", self.current_pirep_id, status_code)
+                log.info("PIREP %s status → %s  ft=%.0fmin  dist=%.1fnm",
+                         self.current_pirep_id, status_code,
+                         flight_time_min or 0, distance_nm or 0)
                 return True
             log.warning("PIREP status update got HTTP %s: %s",
                         r.status_code, r.text[:200])
@@ -154,8 +177,13 @@ class PhpVmsClient:
             log.debug("PIREP status update failed: %s", e)
             return False
 
+    # PirepState enum (app/Models/Enums/PirepState.php):
+    #   IN_PROGRESS=0, PENDING=1, ACCEPTED=2, CANCELLED=3,
+    #   DELETED=4, DRAFT=5, REJECTED=6, PAUSED=7
+    _ACTIVE_STATES = (0, 7)   # IN_PROGRESS or PAUSED
+
     def is_pirep_active(self) -> bool:
-        """Return True if the current PIREP is still IN_PROGRESS (state=1) on phpVMS."""
+        """Return True if the current PIREP is still IN_PROGRESS or PAUSED on phpVMS."""
         if not self.current_pirep_id:
             return False
         try:
@@ -168,7 +196,7 @@ class PhpVmsClient:
                             r.status_code, self.current_pirep_id)
                 return False
             state = r.json().get("data", {}).get("state")
-            active = state in (1, 2)  # 1=IN_PROGRESS, 2=PAUSED
+            active = state in self._ACTIVE_STATES
             if not active:
                 log.warning("PIREP %s is no longer in progress (state=%s)",
                             self.current_pirep_id, state)
@@ -177,10 +205,18 @@ class PhpVmsClient:
             log.debug("PIREP health check failed: %s", e)
             return False
 
-    def file_pirep(self, flight_time_min, fuel_used, landing_rate=0, log_text=""):
+    def file_pirep(self, flight_time_min, fuel_used, distance_nm,
+                   landing_rate=0, log_text=""):
         """
         File the final PIREP with actual flight data.
-        phpVMS v7 uses 'notes' (not 'log') for the free-text field.
+
+        phpVMS v7 FileRequest (app/Http/Requests/Acars/FileRequest.php):
+          - REQUIRED: distance (numeric, in configured internal unit — nmi by default),
+                      flight_time (integer minutes)
+          - Optional: fuel_used, landing_rate, notes, block_time, source_name, …
+
+        On success phpVMS sets state=PENDING and status=ARR (PirepService::file()),
+        then submit() may auto-accept based on the user's rank flags.
         """
         if not self.current_pirep_id:
             return False
@@ -188,6 +224,7 @@ class PhpVmsClient:
         url = f"{self.base_url}/api/pireps/{self.current_pirep_id}/file"
         payload = {
             "flight_time":  int(flight_time_min),
+            "distance":     round(float(distance_nm), 2),
             "fuel_used":    float(fuel_used),
             "landing_rate": float(landing_rate),
             "notes":        log_text,
@@ -197,6 +234,9 @@ class PhpVmsClient:
         try:
             r = requests.post(url, headers=self.headers, json=payload)
             r.raise_for_status()
+            log.info("PIREP %s filed: %d min, %.1f nm, %.0f lbs fuel",
+                     self.current_pirep_id, int(flight_time_min),
+                     distance_nm, fuel_used)
             return True
         except Exception as e:
             log.error("PIREP filing failed: %s", e)

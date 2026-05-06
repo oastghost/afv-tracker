@@ -1,7 +1,8 @@
 """
 AFV Tracker - Gate Manager (Client-side)
 Requests gate assignments from the backend API and caches the result.
-Also maps aircraft ICAO type codes to gate size categories.
+Maps aircraft ICAO type codes to DB wake-turbulence categories:
+  Light | Medium | Heavy | Jumbo
 """
 
 import logging
@@ -13,46 +14,49 @@ import requests
 log = logging.getLogger(__name__)
 
 
-# Aircraft type → gate size mapping
+# Aircraft type → DB size_category (wake-turbulence category)
 AIRCRAFT_GATE_SIZE: dict[str, str] = {
-    # Small (turboprops / regional)
-    "AT76": "S", "AT75": "S", "AT72": "S",
-    "DH8D": "S", "DH8C": "S", "DH8B": "S", "DH8A": "S",
-    "E145": "S", "E135": "S", "E170": "S",
-    "SF34": "S", "BE20": "S", "C208": "S",
-    "PC12": "S", "TBM9": "S", "BE9L": "S", "C182": "S",
+    # Light (turboprops / small piston)
+    "AT76": "Light", "AT75": "Light", "AT72": "Light",
+    "DH8D": "Light", "DH8C": "Light", "DH8B": "Light", "DH8A": "Light",
+    "E145": "Light", "E135": "Light",
+    "SF34": "Light", "BE20": "Light", "C208": "Light", "C207": "Light",
+    "PC12": "Light", "TBM9": "Light", "BE9L": "Light", "C182": "Light",
     # Medium (narrowbody)
-    "B737": "M", "B738": "M", "B739": "M", "B73G": "M",
-    "B733": "M", "B734": "M", "B735": "M",
-    "A318": "M", "A319": "M", "A320": "M", "A321": "M",
-    "E190": "M", "E195": "M", "E75L": "M", "E75S": "M",
-    "CRJ9": "M", "CRJ7": "M",
-    # Large (widebody)
-    "B787": "L", "B788": "L", "B789": "L", "B78X": "L",
-    "B763": "L", "B764": "L", "B762": "L",
-    "A330": "L", "A332": "L", "A333": "L",
-    "A350": "L", "A359": "L", "A35K": "L",
-    "B77W": "L", "B773": "L", "B772": "L",
-    # Heavy / Super
-    "B744": "H", "B74S": "H", "B74D": "H",
-    "A388": "H", "A380": "H", "MD11": "H",
-    "A346": "L", "A342": "L", "A343": "L",
-    "A124": "H", "C17":  "H",
+    "B737": "Medium", "B738": "Medium", "B739": "Medium", "B73G": "Medium",
+    "B733": "Medium", "B734": "Medium", "B735": "Medium",
+    "B752": "Medium", "B753": "Medium",
+    "A318": "Medium", "A319": "Medium", "A320": "Medium", "A321": "Medium",
+    "E170": "Medium", "E190": "Medium", "E195": "Medium",
+    "E75L": "Medium", "E75S": "Medium",
+    "CRJ9": "Medium", "CRJ7": "Medium",
+    # Heavy (widebody)
+    "B787": "Heavy", "B788": "Heavy", "B789": "Heavy", "B78X": "Heavy",
+    "B763": "Heavy", "B764": "Heavy", "B762": "Heavy",
+    "A330": "Heavy", "A332": "Heavy", "A333": "Heavy", "A339": "Heavy",
+    "A350": "Heavy", "A359": "Heavy", "A35K": "Heavy",
+    "A342": "Heavy", "A343": "Heavy", "A346": "Heavy",
+    "B77W": "Heavy", "B773": "Heavy", "B772": "Heavy",
+    "MD11": "Heavy",
+    # Jumbo
+    "B744": "Jumbo", "B74S": "Jumbo", "B74D": "Jumbo",
+    "A388": "Jumbo", "A380": "Jumbo",
+    "A124": "Jumbo", "C17":  "Jumbo",
 }
 
 
 def get_gate_size(aircraft_icao: str) -> str:
-    """Return gate size (S/M/L/H) for an aircraft type. Defaults to M."""
-    return AIRCRAFT_GATE_SIZE.get(aircraft_icao.upper(), "M")
+    """Return the DB size category for an aircraft type. Defaults to Medium."""
+    return AIRCRAFT_GATE_SIZE.get(aircraft_icao.upper(), "Medium")
 
 
 @dataclass
 class GateAssignment:
     gate_number: str
     terminal: str
-    gate_size: str
+    gate_size: str       # Light | Medium | Heavy | Jumbo
     airport_icao: str
-    fallback: bool = False      # True if no size-matched gate found
+    fallback: bool = False
 
 
 class GateManager:
@@ -101,7 +105,7 @@ class GateManager:
         assignment = GateAssignment(
             gate_number=data.get("gate_number", "TBD"),
             terminal=data.get("terminal", ""),
-            gate_size=data.get("gate_size", "M"),
+            gate_size=data.get("gate_size", "Medium"),
             airport_icao=airport_icao,
             fallback=data.get("fallback", False),
         )
@@ -112,10 +116,7 @@ class GateManager:
 
     def fetch_gate_board(self, airport_icao: str,
                          timeout: int = 5) -> list[dict]:
-        """
-        Fetch all gates at an airport for the gate board display.
-        Returns a list of gate dicts or empty list on failure.
-        """
+        """Fetch all gates at an airport for the gate board display."""
         url = f"{self.server_url}/api/gates/{airport_icao}"
         try:
             resp = requests.get(url, timeout=timeout)
@@ -127,10 +128,7 @@ class GateManager:
 
     def release_gate(self, airport_icao: str, gate_name: str,
                      timeout: int = 5) -> bool:
-        """
-        Tell the server to release this gate reservation.
-        Returns True on success, False on any failure (safe to ignore).
-        """
+        """Tell the server to release this gate reservation."""
         url = f"{self.server_url}/api/gates/{airport_icao}/{gate_name}/release"
         try:
             resp = requests.post(url, timeout=timeout)
