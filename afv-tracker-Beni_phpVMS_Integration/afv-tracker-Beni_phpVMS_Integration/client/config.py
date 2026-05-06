@@ -14,7 +14,7 @@ DEFAULTS = {
     "simbrief_id":  "",          # SimBrief username or numeric pilot ID
     "pilot_name":   "",          # Display name
     "discord":      "",          # Discord handle (e.g. username#0000 or just username)
-    "server_url":   "http://localhost:8765",
+    "server_url":   "http://localhost:8000",
     "simconnect_poll_interval": 5,
     "weight_unit":  "LBS",       # "LBS" or "KG"
     "theme":        "dark",
@@ -36,9 +36,6 @@ def load_config() -> dict:
                 merged["vatsim_cid"] = data["pilot_id"]
             if not merged["simbrief_id"] and data.get("simbrief_username"):
                 merged["simbrief_id"] = data["simbrief_username"]
-            # Migrate old default port (8000 was shared with the website server)
-            if merged.get("server_url") == "http://localhost:8000":
-                merged["server_url"] = "http://localhost:8765"
             return merged
         except (json.JSONDecodeError, IOError):
             pass

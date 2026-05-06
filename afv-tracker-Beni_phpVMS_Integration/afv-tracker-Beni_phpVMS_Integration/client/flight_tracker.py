@@ -29,7 +29,7 @@ class FlightPhase(Enum):
     LANDING     = "LANDING"
     TAXI_IN     = "TAXI IN"
     PARKED      = "PARKED"
-
+    
     @property
     def vms_code(self) -> str:
         """Translates internal phase to phpVMS v7 ACARS codes."""
@@ -182,10 +182,6 @@ class FlightTracker(QObject):
 
         self._prev = tel
         return self.phase
-
-    @property
-    def distance_flown_nm(self) -> float:
-        return self._distance_flown_nm
 
     @property
     def distance_to_dest_nm(self) -> float:

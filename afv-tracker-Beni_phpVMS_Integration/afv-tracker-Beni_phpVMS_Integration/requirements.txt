@@ -1,0 +1,30 @@
+# AFV Tracker — Dependencies
+
+# ── GUI (client only) ──────────────────────────────────────────────────────────
+PyQt6>=6.6.0
+
+# ── MSFS SimConnect (client only) ─────────────────────────────────────────────
+SimConnect>=0.4.5
+
+# ── Backend API ───────────────────────────────────────────────────────────────
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.6.0
+websockets>=12.0
+
+# ── Database drivers ───────────────────────────────────────────────────────────
+SQLAlchemy>=2.0.0
+pymysql>=1.1.0           # MySQL / MariaDB
+psycopg2-binary>=2.9.0   # PostgreSQL
+cryptography>=41.0.0     # required by pymysql for SSL connections
+
+# ── HTTP ──────────────────────────────────────────────────────────────────────
+requests>=2.31.0
+
+# ── Config ────────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+
+# ── Watcher (auto-launch when MSFS opens) ─────────────────────────────────────
+psutil>=5.9.0
+pystray>=0.19.0
+Pillow>=10.0.0

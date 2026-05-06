@@ -31,7 +31,6 @@ class Telemetry:
     altitude_ft: float = 0.0
     # Attitude
     heading_mag: float = 0.0
-    heading_true: float = 0.0
     pitch_deg: float = 0.0
     bank_deg: float = 0.0
     # Speed
@@ -200,21 +199,16 @@ class SimConnectWorker(QThread):
 
     def _poll(self, ar: "AircraftRequests", prev_on_ground: bool, prev_alt: float) -> Optional[Telemetry]:
         try:
-            # PLANE_HEADING_DEGREES_TRUE is not in the SimConnect Python library's variable
-            # list, so we compute it from magnetic heading + magnetic variation (MAGVAR).
-            # SimConnect MAGVAR: positive = East, negative = West.
-            # True = Magnetic + Variation (East positive).
-            _heading_mag = float(self._get(ar, "PLANE_HEADING_DEGREES_MAGNETIC", 0.0))
-            _magvar = float(self._get(ar, "MAGVAR", 0.0))
-            _heading_true = (_heading_mag + _magvar) % 360.0
+            # We use a temp dict to verify we actually got data before building the object
+            test_val = ar.get("PLANE_LATITUDE")
+            if test_val is None:
+                return None # SimConnect is alive but returning null = sim is exiting/loading
 
             tel = Telemetry(
                 latitude=float(test_val),
                 longitude=float(self._get(ar, "PLANE_LONGITUDE", 0.0)),
                 altitude_ft=float(self._get(ar, "PLANE_ALTITUDE", 0.0)),
-                # Attitude
-                heading_mag=_heading_mag,
-                heading_true=_heading_true,
+                heading_mag=float(self._get(ar, "PLANE_HEADING_DEGREES_MAGNETIC", 0.0)),
                 pitch_deg=float(self._get(ar, "PLANE_PITCH_DEGREES", 0.0)),
                 bank_deg=float(self._get(ar, "PLANE_BANK_DEGREES", 0.0)),
                 groundspeed_kts=float(self._get(ar, "GROUND_VELOCITY", 0.0)),
@@ -222,16 +216,14 @@ class SimConnectWorker(QThread):
                 tas_kts=float(self._get(ar, "AIRSPEED_TRUE", 0.0)),
                 mach=float(self._get(ar, "AIRSPEED_MACH", 0.0)),
                 vertical_speed_fpm=float(self._get(ar, "VERTICAL_SPEED", 0.0)) * 60,
-                # Engines
-                engine_on=bool(int(self._get(ar, "GENERAL_ENG_COMBUSTION:1", 0))),
-                eng2_on=bool(int(self._get(ar, "GENERAL_ENG_COMBUSTION:2", 0))),
-                eng3_on=bool(int(self._get(ar, "GENERAL_ENG_COMBUSTION:3", 0))),
-                eng4_on=bool(int(self._get(ar, "GENERAL_ENG_COMBUSTION:4", 0))),
-                eng1_n1=float(self._get(ar, "TURB_ENG_N1:1", 0.0)),
-                eng2_n1=float(self._get(ar, "TURB_ENG_N1:2", 0.0)),
-                eng3_n1=float(self._get(ar, "TURB_ENG_N1:3", 0.0)),
-                eng4_n1=float(self._get(ar, "TURB_ENG_N1:4", 0.0)),
-                # Fuel
+                engine_on=bool(int(self._get(ar, "ENG_COMBUSTION:1", 0))),
+                eng2_on=bool(int(self._get(ar, "ENG_COMBUSTION:2", 0))),
+                eng3_on=bool(int(self._get(ar, "ENG_COMBUSTION:3", 0))),
+                eng4_on=bool(int(self._get(ar, "ENG_COMBUSTION:4", 0))),
+                eng1_n1=float(self._get(ar, "ENG_N1_RPM:1", 0.0)),
+                eng2_n1=float(self._get(ar, "ENG_N1_RPM:2", 0.0)),
+                eng3_n1=float(self._get(ar, "ENG_N1_RPM:3", 0.0)),
+                eng4_n1=float(self._get(ar, "ENG_N1_RPM:4", 0.0)),
                 fuel_lbs=float(self._get(ar, "FUEL_TOTAL_QUANTITY_WEIGHT", 0.0)),
                 fuel_qty_gal=float(self._get(ar, "FUEL_TOTAL_QUANTITY", 0.0)),
                 on_ground=bool(int(self._get(ar, "SIM_ON_GROUND", 1))),

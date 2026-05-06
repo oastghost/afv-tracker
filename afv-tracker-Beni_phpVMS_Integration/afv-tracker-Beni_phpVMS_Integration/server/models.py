@@ -118,7 +118,7 @@ class GateResponse(BaseModel):
     airport_icao: str
     gate_number:  str
     terminal:     str            # mapped from flight_type: National / International / Remote
-    gate_size:    str            # Light | Medium | Heavy | Jumbo (from DB size_category)
+    gate_size:    str            # S / M / L / H  (mapped from Light/Medium/Heavy/Jumbo)
     is_available: bool
 
 

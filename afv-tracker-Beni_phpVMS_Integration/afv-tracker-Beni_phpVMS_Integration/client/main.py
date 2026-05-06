@@ -41,21 +41,18 @@ def _server_dir() -> str:
     )
 
 
-SERVER_PORT = 8765   # must match launcher.py SERVER_PORT
-
-
 def _start_server() -> Optional[subprocess.Popen]:
     """
     Spawn the FastAPI/uvicorn server as a hidden subprocess.
     Returns the Popen handle, or None if the port is already occupied.
     """
-    if _port_in_use(SERVER_PORT):
-        log.info("Port %d already in use — skipping server start.", SERVER_PORT)
+    if _port_in_use(8000):
+        log.info("Port 8000 already in use — skipping server start.")
         return None
 
     sdir = _server_dir()
     cmd  = [sys.executable, "-m", "uvicorn", "main:app",
-            "--host", "127.0.0.1", "--port", str(SERVER_PORT)]
+            "--host", "127.0.0.1", "--port", "8000"]
 
     kwargs: dict = dict(
         cwd    = sdir,
