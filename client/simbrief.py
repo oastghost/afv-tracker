@@ -161,11 +161,25 @@ def _parse_ofp(pilot_id: str, data: dict) -> OFP:
     atd_str = _format_utc_time(sched_out)
     eta_str = _format_utc_time(sched_in)
 
+    # 1. Get the values safely
+    icao_air = general.get("icao_airline")
+    f_num = general.get("flight_number", "")
+
+    # 2. Check if SimBrief sent a dictionary instead of a string
+    if not icao_air or isinstance(icao_air, dict):
+        icao_air = ""
+    
+    if not f_num or isinstance(f_num, dict):
+        f_num = ""
+
+    # 3. Combine them (f-string will handle the empty icao_air perfectly)
+    full_callsign = f"{icao_air}{f_num}"
+
     return OFP(
         pilot_id=pilot_id,
         airline=general.get("airline", "AFV"),
-        flight_number=general.get("flight_number", ""),
-        callsign=general.get("icao_airline", "AFV") + general.get("flight_number", ""),
+        flight_number=str(f_num), # Force to string for the UI
+        callsign=full_callsign,
         origin_icao=origin.get("icao_code", ""),
         origin_name=origin.get("name", ""),
         destination_icao=destination.get("icao_code", ""),
@@ -177,7 +191,7 @@ def _parse_ofp(pilot_id: str, data: dict) -> OFP:
         registration=aircraft.get("reg", ""),
         cruise_altitude=_safe_int(general.get("initial_altitude", 0)),
         est_flight_time_min=est_time_min,
-        distance_nm=_safe_int(general.get("distance_units") == "nm" and general.get("air_distance", 0) or general.get("air_distance", 0)),
+        distance_nm=_safe_int(general.get("air_distance", 0)),
         fuel=fuel_figures,
         atd_utc=atd_str,
         eta_utc=eta_str,
@@ -187,14 +201,14 @@ def _parse_ofp(pilot_id: str, data: dict) -> OFP:
     )
 
 
-def _format_utc_time(value: str) -> str:
-    """Convert epoch seconds string to HH:MMz, or return as-is if already formatted."""
-    if not value:
+def _format_utc_time(value) -> str:
+    """Convert epoch seconds to HH:MMz. Safely handles dicts/None."""
+    if not value or isinstance(value, dict): # Add dict check here
         return "----"
     try:
         epoch = int(value)
         from datetime import datetime, timezone
         dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
         return dt.strftime("%H:%Mz")
-    except (ValueError, OSError):
-        return str(value)
+    except (ValueError, OSError, TypeError): # Add TypeError here
+        return str(value)   

@@ -583,15 +583,17 @@ class StatWidget(QWidget):
         if unit:
             layout.addWidget(self._unit)
 
-    def set_value(self, v: str):
-        self._val.setText(v)
+    def set_value(self, v):
+        # Force conversion to string to avoid PyQt6 TypeErrors
+        self._val.setText(str(v))
 
     def set_unit(self, u: str):
         self._unit.setText(u)
 
     def set_color(self, color: str):
         self._val.setStyleSheet(
-            f"color: {color}; font-size: {self._val.font().pointSize()}px;"
+            # f"color: {color}; font-size: {self._val.font().pointSize()}px;"
+            f"color: {color}; font-size: 20px;"
             f"font-weight: bold; font-family: {FONT_MONO}; background: transparent;"
         )
 
@@ -691,7 +693,7 @@ class BriefingPanel(QFrame):
 
         # Header row
         hdr = QHBoxLayout()
-        hdr.addWidget(_label("FLIGHT BRIEFING", TEXT_PRIMARY, 12, bold=True))
+        hdr.addWidget(_label("SIMBRIEF OFP DATA", TEXT_PRIMARY, 12, bold=True))
         hdr.addStretch()
         self._fetch_btn = QPushButton("FETCH OFP")
         self._fetch_btn.setStyleSheet(
@@ -880,12 +882,17 @@ class SimBriefFetchWorker(QThread):
     success = pyqtSignal(object)   # OFP
     failure = pyqtSignal(str)      # error message
 
-    def __init__(self, pilot_id: str, parent=None):
+    def __init__(self, pilot_id, parent=None):
         super().__init__(parent)
-        self.pilot_id = pilot_id
+        # If config somehow saved a dict, get the string out of it
+        if isinstance(pilot_id, dict):
+            self.pilot_id = str(pilot_id.get('id', ''))
+        else:
+            self.pilot_id = str(pilot_id)
 
     def run(self):
         try:
+            # Now pilot_id is guaranteed to be a string
             ofp = fetch_ofp(self.pilot_id)
             self.success.emit(ofp)
         except SimBriefError as e:
@@ -1171,6 +1178,64 @@ class NetworkPanel(QFrame):
             self.setMaximumWidth(260)
             self._toggle_btn.setText("◀")
 
+# __ phpVMS Interface ───────────────────────────────────────────────────────────────
+
+class BidPanel(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(
+            f"QFrame {{ background: {BG_SECONDARY}; border: 1px solid {BORDER}; border-radius: 6px; }}"
+        )
+        self.setFixedHeight(140) # Compact height
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(8)
+
+        # Header
+        hdr = QHBoxLayout()
+        hdr.addWidget(_label("PHPVMS BOOKING", ACCENT_RED, 11, bold=True))
+        hdr.addStretch()
+        self._id_lbl = _label("ID: ---", TEXT_SECONDARY, 10, font=FONT_MONO)
+        hdr.addWidget(self._id_lbl)
+        layout.addLayout(hdr)
+        layout.addWidget(_sep())
+
+        # Info Grid
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        
+        self._callsign = StatWidget("ASSIGNED CALLSIGN", "---", "", 16)
+        self._fnum = StatWidget("FLIGHT NO.", "---", "", 16)
+        self._route = StatWidget("NETWORK ROUTE", "---", "", 16)
+        self._aircraft = StatWidget("ASSIGNED ACFT", "---", "", 16)
+
+        grid.addWidget(self._callsign, 0, 0)
+        grid.addWidget(self._fnum, 0, 1)
+        grid.addWidget(self._route, 1, 0)
+        grid.addWidget(self._aircraft, 1, 1)
+        
+        layout.addLayout(grid)
+
+    def load_bid(self, bid_data: dict):
+        flight = bid_data.get('flight', {})
+        acft = bid_data.get('aircraft', {}) or flight.get('aircraft', {})
+        
+        # Wrapping in str() or using f-strings ensures we send strings to the widgets
+        self._id_lbl.setText(f"ID: {bid_data.get('id', '---')}")
+        
+        # Flight number is often an int, so we force it to string
+        f_num = str(flight.get('flight_number', '---'))
+        icao = flight.get('airline', {}).get('icao', '')
+        
+        self._callsign.set_value(f"{icao}{f_num}")
+        self._fnum.set_value(f_num)
+        
+        self._route.set_value(f"{flight.get('dpt_airport_id')} → {flight.get('arr_airport_id')}")
+        
+        acft_name = f"{acft.get('registration', '---')} ({acft.get('icao', '---')})"
+        self._aircraft.set_value(acft_name)
+
 
 # ── phpVMS Bid Panel ──────────────────────────────────────────────────────────
 
@@ -1374,6 +1439,9 @@ class MainWindow(QMainWindow):
 
         self._status_panel = StatusPanel()
         right_layout.addWidget(self._status_panel, stretch=1)
+        
+        # Bid Panel
+        right_layout.addWidget(self._vms_bid_panel)
 
         # phpVMS booking info
         right_layout.addWidget(self._vms_bid_panel)
@@ -2293,6 +2361,22 @@ class MainWindow(QMainWindow):
             self._discord.close()
         self._vms_sync.close()
         QApplication.quit()
+        
+    def _get_vms_phase(self, phase: FlightPhase) -> str:
+        """Maps internal FlightPhase to phpVMS v7 ACARS states."""
+        mapping = {
+            FlightPhase.PRE_FLIGHT: "Brd",
+            FlightPhase.TAXI_OUT:   "Txi",
+            FlightPhase.TAKEOFF:    "Dep",
+            FlightPhase.CLIMB:      "Enr",
+            FlightPhase.CRUISE:     "Enr",
+            FlightPhase.DESCENT:    "Enr",
+            FlightPhase.APPROACH:   "App",
+            FlightPhase.LANDING:    "Lnd",
+            FlightPhase.TAXI_IN:    "Lnd",
+            FlightPhase.PARKED:     "Pkd",
+        }
+        return mapping.get(phase, "Enr")
 
 
 # ── Airport coordinates (lat, lon) for distance calc ──────────────────────────
