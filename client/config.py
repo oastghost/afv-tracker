@@ -20,6 +20,11 @@ DEFAULTS = {
     "theme":        "dark",
     "VA_URL":  "https://africanava.ddns.net",
     "Pilot_Key":    "",
+    "sound_enabled":        True,
+    "discord_rpc_enabled":  True,
+    # App-wide Discord Application ID (from https://discord.com/developers/applications).
+    # Shared by every pilot — set once by the VA admin, not per-pilot config.
+    "discord_client_id":    "1522621788264071239",
 }
 
 

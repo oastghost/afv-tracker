@@ -31,7 +31,7 @@ if str(_HERE) not in sys.path:
 import psutil
 
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox
-from PyQt6.QtCore    import Qt, QTimer, QObject, pyqtSignal
+from PyQt6.QtCore    import Qt, QTimer, QObject, pyqtSignal, QSharedMemory
 from PyQt6.QtGui     import QIcon, QPixmap, QPainter, QColor, QBrush, QRadialGradient
 
 _LOG_PATH = Path.home() / ".afv_tracker" / "afv_tracker.log"
@@ -123,13 +123,24 @@ def run_server_mode():
     import uvicorn
     import importlib.util
 
+    # A windowed (no-console) PyInstaller exe has sys.stdout/stderr = None.
+    # uvicorn's default logging config calls sys.stdout.isatty() while building
+    # its formatters, which raises AttributeError on None and aborts the server
+    # before it can bind. Give it real streams and disable its own dictConfig
+    # (log_config=None) so it never touches isatty.
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
+
     spec = importlib.util.spec_from_file_location(
         "afv_server_main", sdir / "main.py"
     )
     server_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(server_module)
 
-    uvicorn.run(server_module.app, host="127.0.0.1", port=SERVER_PORT, log_level="warning")
+    uvicorn.run(server_module.app, host="127.0.0.1", port=SERVER_PORT,
+                log_level="warning", log_config=None)
 
 
 # ── Server lifecycle (GUI mode) ───────────────────────────────────────────────
@@ -229,7 +240,30 @@ def _make_pixmap(size: int = 64, active: bool = False) -> QPixmap:
     return pm
 
 
+def _logo_path() -> Path:
+    """Resolve client/assets/icon.png in source or frozen mode."""
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "assets" / "icon.png"
+    return _HERE / "assets" / "icon.png"
+
+
 def _make_icon(active: bool = False) -> QIcon:
+    """Africana logo tray icon — full colour when MSFS is up, dimmed when idle.
+    Falls back to the drawn 'A' mark if the logo asset is missing."""
+    logo = _logo_path()
+    if logo.exists():
+        src = QPixmap(str(logo))
+        if not src.isNull():
+            if active:
+                return QIcon(src)
+            # Dim the logo when idle
+            dim = QPixmap(src.size())
+            dim.fill(Qt.GlobalColor.transparent)
+            p = QPainter(dim)
+            p.setOpacity(0.45)
+            p.drawPixmap(0, 0, src)
+            p.end()
+            return QIcon(dim)
     return QIcon(_make_pixmap(64, active))
 
 
@@ -287,8 +321,9 @@ def find_msfs() -> tuple[bool, str]:
 # ── Watcher signal bridge ─────────────────────────────────────────────────────
 
 class _Bridge(QObject):
-    msfs_started = pyqtSignal(str)   # version string
-    msfs_stopped = pyqtSignal()
+    msfs_started   = pyqtSignal(str)          # version string
+    msfs_stopped   = pyqtSignal()
+    update_checked = pyqtSignal(object, bool) # (release_info dict or None, manual)
 
 
 # ── Main application ──────────────────────────────────────────────────────────
@@ -301,6 +336,7 @@ class AFVLauncher:
         self.auto_launch  = True
         self._msfs_was_running = False
         self._bridge      = _Bridge()
+        self._pending_update = None   # release info dict once an update is found
 
         # Tray icon
         self.tray = QSystemTrayIcon(_make_icon(active=False), app)
@@ -313,14 +349,22 @@ class AFVLauncher:
         # Wire signals (bridge runs on Qt thread)
         self._bridge.msfs_started.connect(self._on_msfs_started)
         self._bridge.msfs_stopped.connect(self._on_msfs_stopped)
+        self._bridge.update_checked.connect(self._on_update_checked)
 
         # Poll timer (Qt timer = runs on main thread, safe)
         self._timer = QTimer()
         self._timer.timeout.connect(self._poll)
         self._timer.start(POLL_MS)
 
+        # Open the tracker window right away — the app should be visible
+        # as soon as the exe is launched, not sit silently in the tray.
+        self._show_tracker()
+
         # Run one poll immediately in case MSFS is already open
         QTimer.singleShot(500, self._poll)
+
+        # Check for a newer release shortly after startup — quiet unless one is found
+        QTimer.singleShot(8_000, self._check_for_updates)
 
     # ------------------------------------------------------------------
     # Polling
@@ -363,12 +407,43 @@ class AFVLauncher:
         self._build_menu()
 
     # ------------------------------------------------------------------
+    # Update checking
+    # ------------------------------------------------------------------
+
+    def _check_for_updates(self, manual: bool = False):
+        def _run():
+            from updater import check_latest_release
+            info = check_latest_release()
+            self._bridge.update_checked.emit(info, manual)
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_update_checked(self, info, manual: bool):
+        if info:
+            self._pending_update = info
+            self._build_menu()
+            self.tray.showMessage(
+                "AFV Tracker update available",
+                f"Version {info['version']} is available. "
+                f"Open the tray menu to download it.",
+                QSystemTrayIcon.MessageIcon.Information,
+                8000,
+            )
+        elif manual:
+            QMessageBox.information(None, "AFV Tracker",
+                                     "You're running the latest version.")
+
+    def _open_update_page(self):
+        if self._pending_update:
+            import webbrowser
+            webbrowser.open(self._pending_update["url"])
+
+    # ------------------------------------------------------------------
     # Window management
     # ------------------------------------------------------------------
 
     def _show_tracker(self):
         if self.main_window is None:
-            from gui import MainWindow
+            from gui_web import MainWindow
             self.main_window = MainWindow()
             # Override close to hide-to-tray instead of quit
             self.main_window.closeEvent = self._on_window_close
@@ -384,15 +459,9 @@ class AFVLauncher:
         self._build_menu()
 
     def _on_window_close(self, event):
-        """Intercept close → hide to tray instead of quitting."""
-        event.ignore()
-        self._hide_tracker()
-        self.tray.showMessage(
-            "AFV Tracker",
-            "Still running in the system tray.",
-            QSystemTrayIcon.MessageIcon.Information,
-            2000,
-        )
+        """Closing the window exits the app entirely — no hide-to-tray."""
+        event.accept()
+        self._quit()
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
@@ -449,6 +518,16 @@ class AFVLauncher:
         menu.addAction(su_lbl).triggered.connect(self._toggle_startup)
 
         menu.addSeparator()
+
+        if self._pending_update:
+            upd_lbl = f"⬆  Update to v{self._pending_update['version']} available"
+            menu.addAction(upd_lbl).triggered.connect(self._open_update_page)
+        else:
+            menu.addAction("Check for Updates…").triggered.connect(
+                lambda: self._check_for_updates(manual=True)
+            )
+
+        menu.addSeparator()
         menu.addAction("Exit").triggered.connect(self._quit)
 
         self.tray.setContextMenu(menu)
@@ -465,18 +544,32 @@ class AFVLauncher:
         self._build_menu()
 
     def _quit(self):
-        if self.main_window:
-            # Properly stop workers
-            try:
-                self.main_window._stop_tracking()
-                if self.main_window._net_client:
-                    self.main_window._net_client.stop()
-                    self.main_window._net_client.wait(1000)
-            except Exception:
-                pass
         self.tray.hide()
         stop_server(self._server)
+        if self.main_window:
+            # _quit_app stops tracking/net/discord/sync workers, hides the
+            # window's tray icon and calls QApplication.quit() itself.
+            try:
+                self.main_window._quit_app()
+                return
+            except Exception:
+                pass
         self.app.quit()
+
+
+# ── Single-instance lock ──────────────────────────────────────────────────────
+# Closing the tracker window hides it to the tray instead of exiting, so
+# launching the exe again later (shortcut, taskbar, startup) would otherwise
+# spawn a second independent GUI process with its own DiscordPresenceWorker,
+# SimConnect poller, etc. racing the first. QSharedMemory.create() fails if
+# the segment already exists, which on Windows is reliably released by the
+# OS when the owning process exits (even on a crash), so no manual cleanup
+# of a stale lock is needed.
+_instance_lock = QSharedMemory("AFVTracker-SingleInstance-v1")
+
+
+def _acquire_single_instance() -> bool:
+    return _instance_lock.create(1)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -494,15 +587,26 @@ def main():
             ctypes.windll.kernel32.GetConsoleWindow(), 0
         )
 
-    # Start the server subprocess before building the GUI
-    _server = start_server()
-    # Give it a moment to bind the port before the client tries to connect
-    time.sleep(1.5)
+    # QtWebEngine (web UI in gui_web) needs shared OpenGL contexts enabled
+    # before the QApplication exists, or the later QWebEngineWidgets import fails.
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
 
     app = QApplication(sys.argv)
     app.setApplicationName("AFV Tracker")
     app.setOrganizationName("Africana Virtual Airways")
     app.setQuitOnLastWindowClosed(False)   # stay alive in tray
+
+    if not _acquire_single_instance():
+        log.warning("AFV Tracker is already running — exiting this instance.")
+        QMessageBox.information(None, "AFV Tracker",
+                                 "AFV Tracker is already running.\n"
+                                 "Check your system tray for the icon.")
+        sys.exit(0)
+
+    # Start the server subprocess before building the GUI
+    _server = start_server()
+    # Give it a moment to bind the port before the client tries to connect
+    time.sleep(1.5)
 
     if not QSystemTrayIcon.isSystemTrayAvailable():
         QMessageBox.critical(None, "AFV Tracker",

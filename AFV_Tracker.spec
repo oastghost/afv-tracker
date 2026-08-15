@@ -23,8 +23,22 @@ a = Analysis(
         # Bundle the entire server package so the frozen exe can run it
         ('server/*.py',          'server'),
         ('server/routes/*.py',   'server/routes'),
+        # Bundle the web UI (loaded by gui_web via QWebEngineView).
+        # Resolved at runtime from sys._MEIPASS / "web" — see gui_web._web_dir().
+        ('client/web',           'web'),
+        # App/tray icons (resolved via gui_web._asset / launcher._logo_path).
+        ('client/assets',        'assets'),
     ],
     hiddenimports=[
+        # Server framework — server/*.py are bundled as datas and loaded at
+        # runtime via importlib (launcher.run_server_mode), so PyInstaller's
+        # static analysis never sees their imports. Everything server code
+        # imports from site-packages must be listed here explicitly.
+        'fastapi',
+        'fastapi.middleware.cors',
+        'fastapi.responses',
+        'dotenv',
+        'sqlalchemy',
         # uvicorn internals (not auto-detected)
         'uvicorn.lifespan.on',
         'uvicorn.protocols.http.auto',
@@ -58,6 +72,14 @@ a = Analysis(
         'PIL',
         'PIL.Image',
         'PIL.ImageDraw',
+        # Discord Rich Presence
+        'pypresence',
+        # Web UI host (QWebEngineView + QWebChannel bridge)
+        'PyQt6.QtWebEngineWidgets',
+        'PyQt6.QtWebEngineCore',
+        'PyQt6.QtWebChannel',
+        'gui_web',
+        'web_bridge',
     ],
     hookspath=[],
     hooksconfig={},
@@ -88,6 +110,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='client/assets/icon.ico',
 )
 
 coll = COLLECT(

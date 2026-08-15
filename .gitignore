@@ -8,6 +8,7 @@ env/
 *.egg-info/
 dist/
 build/
+releases/
 
 # Environment / secrets — NEVER commit these
 .env

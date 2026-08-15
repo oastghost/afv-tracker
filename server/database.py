@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     Column, Integer, String, Float, DateTime,
-    ForeignKey, create_engine, PrimaryKeyConstraint, text,
+    ForeignKey, create_engine, PrimaryKeyConstraint, text, inspect,
 )
 from sqlalchemy.orm import DeclarativeBase, sessionmaker, relationship
 
@@ -208,8 +208,18 @@ class TelemetryRecord(Base):
 _OWN_TABLES = [Pilot, FlightLog, TelemetryRecord]
 
 
+def _table_exists(name: str) -> bool:
+    """True if a table with this name exists in the connected DB."""
+    return inspect(engine).has_table(name)
+
+
 def _ensure_gates_afv_column():
     """Add afv_pilot_id to the shared gates table if it doesn't exist yet."""
+    # Migration helper for an existing gates table only — on a fresh local DB
+    # the table is created (with the column already present) by init_db, so
+    # there is nothing to migrate.
+    if not _table_exists("gates"):
+        return
     dialect = get_dialect()
     with engine.connect() as conn:
         if dialect == "sqlite":
@@ -249,6 +259,8 @@ _TELEMETRY_NEW_COLUMNS = [
 
 def _ensure_telemetry_columns():
     """Add new telemetry columns to existing telemetry table if absent."""
+    if not _table_exists("telemetry"):
+        return
     dialect = get_dialect()
     with engine.connect() as conn:
         if dialect == "sqlite":
@@ -273,9 +285,19 @@ def _ensure_telemetry_columns():
 
 
 def init_db():
-    """Create AFV Tracker's own tables. Add afv_pilot_id to gates if absent."""
+    """
+    Create AFV Tracker's own tables, then run column migrations.
+
+    On a hosted DB (MySQL/Postgres) the friend's gates/aircrafts tables
+    already exist and must not be recreated — only _OWN_TABLES are created.
+    On a local SQLite DB (the bundled exe) nobody else provides those tables,
+    so we create the full schema, including gates/aircrafts, so seed() can
+    populate them and the gate/network features work offline.
+    """
     for model in _OWN_TABLES:
         model.__table__.create(bind=engine, checkfirst=True)
+    if get_dialect() == "sqlite":
+        Base.metadata.create_all(bind=engine, checkfirst=True)
     _ensure_gates_afv_column()
     _ensure_telemetry_columns()
 

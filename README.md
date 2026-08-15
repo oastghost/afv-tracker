@@ -1,198 +1,212 @@
 # Africana Virtual Airways — Flight Tracker
 
-Desktop flight tracking application for AFV pilots flying in Microsoft Flight Simulator 2024.
+Desktop companion app for AFV pilots flying in Microsoft Flight Simulator 2020/2024: live telemetry tracking, automatic gate assignment, and full phpVMS crew-centre integration (PIREP filing, ACARS position reports) — all from a system-tray app that opens itself the moment MSFS launches.
 
 ## Features
 
-- **SimBrief integration** — fetches your latest OFP automatically
-- **Live MSFS telemetry** via SimConnect — altitude, speed, fuel, flight phase
-- **Automatic flight phase detection** — Pre-flight → Taxi → Climb → Cruise → Approach → Landing → Parked
-- **Gate assignment** — assigned automatically when you enter APPROACH phase
-- **Real-time pilot roster** — live WebSocket connection to the server; see all connected AFV pilots, their phase, altitude, and assigned gate
-- **Flight logging** — every completed flight synced to the backend with fuel used, distance flown, and landing rate
-- **Dark aviation UI** — AFV red, black, and white theme; cockpit-style layout
+- **Auto-launch** — sits in the system tray, detects MSFS 2020/2024 starting, and opens itself
+- **Live MSFS telemetry** via SimConnect — position, altitude, speed, fuel, engines, flaps, gear, autopilot, polled every 5s
+- **Automatic flight-phase detection** — PRE-FLIGHT → TAXI OUT → TAKEOFF → CLIMB → CRUISE → DESCENT → APPROACH → LANDING → TAXI IN → PARKED
+- **Automatic gate assignment** — assigned the moment you drop below 10,000 ft within 50 nm of your destination, across 85 gates at 13 AFV hub airports
+- **Live pilot roster & map** — MapLibre GL live map of every connected AFV pilot, backed by a WebSocket feed
+- **phpVMS crew-centre login** — sign in with your normal AFV crew-centre email + password; a manual API-key option is also available if you prefer it
+- **Full PIREP lifecycle** — prefiles, ACARS position reports, phase/status updates, and PIREP filing all synced to phpVMS automatically
+- **Offline-safe** — failed phpVMS writes queue locally and retry automatically once connectivity returns, so flight data never silently drops
+- **Discord Rich Presence** — shows your current flight on your Discord profile
+- **Sound cues** — short audio cues for takeoff, landing, and gate assignment
+- **In-app update checks** — notifies you in the tray when a new version is published
+- **AFV dark theme** — red/black/white cockpit-styled UI
 
 ---
 
-## Requirements
+## For Pilots — Installing
 
-- Python 3.11+
-- Microsoft Flight Simulator 2024 (for SimConnect)
-- SimConnect SDK (installed with MSFS)
+Grab the latest release from the [Releases page](https://github.com/oastghost/afv-tracker/releases):
+
+- **`AFV-Tracker-Setup-x.y.z.exe`** (recommended) — installer, no admin rights required, installs to your user profile, adds Start Menu / Desktop shortcuts
+- **`AFV-Tracker-x.y.z-portable.zip`** — no installer, just unzip and run `AFV Tracker.exe`
+
+> **Windows may show a blue "Windows protected your PC" screen on first run.** That's SmartScreen flagging the app as unrecognized because it isn't code-signed yet (a paid certificate we don't have) — it doesn't mean anything is actually wrong. Click **More info**, then **Run anyway**.
+
+On first launch you'll be asked to sign in with your AFV crew-centre **email and password** — the same credentials you use on the VA website. Your password is never stored, only the API key it resolves to. If you'd rather not use email/password, click "Use API key instead" and paste your key from the crew centre's Profile page.
+
+Once signed in, the app lives in your system tray and opens itself automatically whenever MSFS starts. Right-click the tray icon for options (open/hide tracker, run at startup, check for updates).
 
 ---
 
-## Setup
+## For Developers — Running from Source
 
-### 1. Clone / download the project
-
-```
-afv-tracker/
-├── client/
-├── server/
-├── requirements.txt
-└── README.md
-```
-
-### 2. Install dependencies
+**Requirements:** Python 3.11+, Microsoft Flight Simulator 2020/2024 (for the SimConnect DLL)
 
 ```bash
+git clone https://github.com/oastghost/afv-tracker.git
+cd afv-tracker
 pip install -r requirements.txt
 ```
 
-> **Note:** `SimConnect` (pip package) requires the SimConnect SDK DLL present on the system.  
-> It is installed automatically with MSFS 2020/2024. If you get a DLL error, ensure MSFS is installed.
+Run the whole app (tray launcher + embedded server) exactly as pilots get it:
 
-### 3. Start the backend server
+```bash
+python client/launcher.py
+```
+
+This spawns the FastAPI/SQLite server as a background subprocess on `127.0.0.1:8765`, seeds gate data on first run, then opens the tray icon and tracker window.
+
+To work on the server API by itself instead:
 
 ```bash
 cd server
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8765
 ```
 
-On first run this will:
-- Create the SQLite database at `~/.afv_tracker/afv_tracker.db`
-- Seed gate data for all AFV hub airports
+Interactive API docs at `http://localhost:8765/docs`.
 
-### 4. Start the client
-
-```bash
-cd client
-python main.py
-```
-
-On first launch, a **Pilot Setup** dialog will appear. Enter your:
-- **SimBrief Pilot ID** (username or numeric ID)
-- **Your name**
-
-These are saved to `~/.afv_tracker/config.json` and reloaded on future launches.
+By default the server uses a local SQLite DB at `~/.afv_tracker/afv_tracker.db`. To point it at a shared MySQL/PostgreSQL database instead, copy `server/.env.example` to `server/.env` and set `DATABASE_URL` — never commit `.env`.
 
 ---
 
-## Usage
+## Building a Release
 
-1. Open the app — it auto-fetches your latest SimBrief OFP and connects to the live roster
-2. Load MSFS and start your flight
-3. Click **START TRACKING** — the app connects to MSFS via SimConnect
-4. Fly your route — altitude, speed, phase, and fuel update every 5 seconds; your position is broadcast to the roster
-5. As you descend through **10,000 ft within 50 nm of your destination**, a gate is assigned and the gate banner appears
-6. Park with engines off and parking brake set — the flight is logged (fuel used, distance flown, landing rate) and your gate is released
+Requires the repo's `.venv` (with PyInstaller) and [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`):
+
+```powershell
+.\build_release.ps1
+```
+
+This runs PyInstaller (`AFV_Tracker.spec`, onedir) → Inno Setup (`installer.iss`) → portable zip, and drops everything in `dist\installer\`. Version is single-sourced from `client/version.py` — bump it before building.
+
+**The in-app updater only checks GitHub Releases**, not tags or commits — after building, you still need to publish an actual Release on GitHub with a matching version tag (e.g. `v1.2.0`) for pilots' tray "update available" notice to fire. This also requires the repo (or at least its Releases) to be publicly visible, since the client checks the GitHub API unauthenticated.
 
 ---
 
 ## Configuration
 
-Config file: `~/.afv_tracker/config.json`
+Per-pilot config lives at `~/.afv_tracker/config.json`, created automatically on first run:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `pilot_id` | `""` | SimBrief pilot ID / username |
-| `pilot_name` | `""` | Your display name |
-| `server_url` | `http://localhost:8000` | Backend API URL |
-| `simconnect_poll_interval` | `5` | SimConnect poll interval in seconds |
-
----
-
-## Airport Gate Coverage
-
-| ICAO | Airport | Gates |
-|------|---------|-------|
-| FTTG | N'Djamena | 7 |
-| FACT | Cape Town | 10 |
-| FAOR | O.R. Tambo, Johannesburg | 13 |
-| FMMI | Antananarivo | 5 |
-| HTDA | Dar es Salaam | 7 |
-| FQMA | Maputo | 5 |
-| FALA | Lanseria | 5 |
-| HAAB | Addis Ababa | 7 |
-| DNMM | Lagos | 6 |
-| HKJK | Nairobi | 6 |
-| DTTA | Tunis | 4 |
-| HECA | Cairo | 6 |
-| GOBD | Dakar | 4 |
-
-Gate sizes: **S** = Small (turboprop), **M** = Medium (narrowbody), **L** = Large (widebody), **H** = Heavy
-
----
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/flights/track` | Receive telemetry ping |
-| `POST` | `/api/flights/complete` | Log completed flight |
-| `GET` | `/api/flights/{pilot_id}` | Flight history |
-| `GET` | `/api/gates/{icao}/assign?aircraft_type=B738` | Request gate |
-| `GET` | `/api/gates/{icao}` | List all gates |
-| `POST` | `/api/pilots/register` | Register pilot |
-| `GET` | `/api/pilots/{pilot_id}` | Pilot profile |
-| `WS` | `/ws/{pilot_id}` | Real-time roster sync (telemetry, gate events) |
-| `GET` | `/health` | Health check |
-
-Full interactive docs: `http://localhost:8000/docs`
+| `vatsim_cid` | `""` | VATSIM CID — primary pilot identifier sent to the server |
+| `simbrief_id` | `""` | SimBrief username or numeric pilot ID |
+| `pilot_name` | `""` | Display name |
+| `discord` | `""` | Discord handle |
+| `server_url` | `http://localhost:8765` | Embedded/local tracker server URL |
+| `VA_URL` | `https://africanava.ddns.net` | AFV crew-centre base URL |
+| `Pilot_Key` | `""` | phpVMS API key, resolved automatically at login — don't edit by hand |
+| `simconnect_poll_interval` | `5` | SimConnect poll interval, in seconds |
+| `weight_unit` | `LBS` | `LBS` or `KG` |
+| `theme` | `dark` | UI theme |
+| `sound_enabled` | `true` | Audio cues on/off |
+| `discord_rpc_enabled` | `true` | Discord Rich Presence on/off |
+| `discord_client_id` | *(shared)* | AFV's Discord Application ID — set VA-wide, not per pilot |
 
 ---
 
 ## Architecture
 
 ```
-┌────────────────────────────────────────┐
-│          MSFS 2024 (SimConnect)         │
-└────────────────────┬───────────────────┘
-                     │ SimVars (poll 5s)
-┌────────────────────▼───────────────────┐
-│   AFV Client (PyQt6 Desktop App)        │
-│  ┌──────────┐ ┌──────────┐ ┌────────┐  │
-│  │ SimBrief │ │ SimConn  │ │ Flight │  │
-│  │  Fetch   │ │  Worker  │ │Tracker │  │
-│  └──────────┘ └──────────┘ └────────┘  │
-│  ┌──────────┐ ┌──────────────────────┐  │
-│  │  Gate    │ │   Network Client     │  │
-│  │ Manager  │ │  (HTTP + WebSocket)  │  │
-│  └──────────┘ └──────────────────────┘  │
-│         GUI (MainWindow + Panels)       │
-└──────────┬─────────────────┬───────────┘
-           │ HTTP (REST)     │ WebSocket
-┌──────────▼─────────────────▼───────────┐
-│   AFV Server (FastAPI + SQLite)         │
-│  /api/flights  /api/gates  /api/pilots  │
-│  /ws/{pilot_id}  (live roster sync)     │
-└────────────────────────────────────────┘
+┌────────────────────────────────┐
+│   MSFS 2020/2024 (SimConnect)  │
+└────────────────┬────────────────┘
+                 │ SimVars, polled every 5s
+┌────────────────▼─────────────────────────────────────────┐
+│  AFV Tracker.exe  (single process, system tray)           │
+│                                                             │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────────┐ │
+│  │ SimConnect  │  │   Flight     │  │   phpVMS Sync      │ │
+│  │  Worker     │  │   Tracker    │  │   Worker (FIFO)    │ │
+│  └─────────────┘  └──────────────┘  └───────────────────┘ │
+│  ┌────────────────────────────────────────────────────┐   │
+│  │  MainWindow (QWebEngineView)                        │   │
+│  │  client/web — HTML/CSS/JS + MapLibre GL live map     │   │
+│  │  ↕ QWebChannel bridge (web_bridge.py)                │   │
+│  └────────────────────────────────────────────────────┘   │
+└──────────┬───────────────────────────────┬─────────────────┘
+           │ HTTP + WebSocket              │ HTTPS
+┌──────────▼───────────────────┐  ┌────────▼──────────────────┐
+│ Embedded server                │  │ phpVMS crew centre         │
+│ FastAPI + SQLite                │  │ africanava.ddns.net        │
+│ 127.0.0.1:8765 (subprocess)    │  │ login · PIREPs · ACARS     │
+│ gates · roster · telemetry     │  └─────────────────────────────┘
+└─────────────────────────────────┘
 ```
+
+The embedded server is local per pilot (gate contention, live roster) — it is **not** shared VA state. Crew-centre data (PIREPs, bids, pilot profile) goes through the real phpVMS server instead.
 
 ---
 
-## Phase Detection Logic
+## API Reference (embedded server)
 
-| Phase | Conditions |
-|-------|-----------|
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET`  | `/health` | Health check + count of pilots online |
+| `WS`   | `/ws/{vatsim_cid}` | Live roster sync — telemetry + gate events |
+| `POST` | `/api/flights/track` | Receive a telemetry ping |
+| `POST` | `/api/flights/complete` | Log a completed flight |
+| `GET`  | `/api/flights/{vatsim_cid}` | Flight history |
+| `GET`  | `/api/gates/{icao}` | List gates at an airport |
+| `GET`  | `/api/gates/{icao}/assign?aircraft_type=B738` | Request a gate |
+| `POST` | `/api/gates/{icao}/{gate_name}/release` | Release a gate |
+| `POST` | `/api/pilots/register` | Create/update pilot record |
+| `GET`  | `/api/pilots/online` | Currently connected pilots |
+| `GET`  | `/api/pilots/{vatsim_cid}` | Pilot profile |
+
+---
+
+## Gate Coverage
+
+85 gates across 13 AFV hub airports:
+
+| ICAO | Airport |
+|------|---------|
+| FTTG | N'Djamena International |
+| FACT | Cape Town International |
+| FAOR | O.R. Tambo International, Johannesburg |
+| FMMI | Ivato International, Antananarivo |
+| HTDA | Julius Nyerere International, Dar es Salaam |
+| FQMA | Maputo International |
+| FALA | Lanseria International |
+| HAAB | Addis Ababa Bole International |
+| DNMM | Murtala Muhammed International, Lagos |
+| HKJK | Jomo Kenyatta International, Nairobi |
+| DTTA | Tunis-Carthage International |
+| HECA | Cairo International |
+| GOBD | Blaise Diagne International, Dakar |
+
+Gate sizes: **Light** (turboprop) · **Medium** (narrowbody) · **Heavy** (widebody) · **Jumbo**
+
+---
+
+## Flight Phase Detection
+
+| Phase | Trigger |
+|-------|---------|
 | PRE-FLIGHT | On ground, engines off |
-| TAXI OUT | On ground, engines on, GS < 30 kts |
-| TAKEOFF | On ground, GS ≥ 30 kts |
-| CLIMB | Airborne, VS > +100 fpm |
-| CRUISE | Airborne, altitude stable ±500 ft for 60 sec |
-| DESCENT | Airborne, VS < -100 fpm |
-| APPROACH | Airborne, alt < 10,000 ft, within 50 nm of destination |
-| LANDING | Transition from airborne to on ground |
-| TAXI IN | On ground, engines on, GS < 30 kts (post-landing) |
+| TAXI OUT | On ground, engines on, groundspeed < 30 kts |
+| TAKEOFF | On ground, groundspeed ≥ 30 kts |
+| CLIMB | Airborne, vertical speed > +300 fpm |
+| CRUISE | Airborne, altitude stable within ±500 ft for 60s |
+| DESCENT | Airborne, vertical speed < -300 fpm |
+| APPROACH | Airborne, below 10,000 ft and within 50 nm of destination |
+| LANDING | Transition from airborne to on-ground |
+| TAXI IN | On ground, engines on, groundspeed < 30 kts (post-landing) |
 | PARKED | On ground, engines off, parking brake set |
 
 ---
 
 ## Troubleshooting
 
-**"SimConnect library not found"**  
-Run `pip install SimConnect`. Ensure MSFS is installed.
+**Blue "Windows protected your PC" screen on install** — the app isn't code-signed yet. Click **More info** → **Run anyway**. See [Installing](#for-pilots--installing).
 
-**"Cannot connect to MSFS"**  
-MSFS must be running and loaded into a flight (not the main menu). The app retries automatically every 10 seconds.
+**"SimConnect library not found" / can't connect to MSFS** — SimConnect installs with MSFS itself. Make sure MSFS is running and you're loaded into a flight, not sitting at the main menu. The app retries automatically every 10 seconds.
 
-**"SimBrief pilot ID not found"**  
-Double-check your SimBrief username at [simbrief.com](https://www.simbrief.com). Numeric IDs and usernames both work.
+**Login fails / "Invalid email or password"** — use your AFV crew-centre credentials, not SimBrief or Discord. If crew-centre login keeps failing, switch to "Use API key instead" on the login screen and paste your key from the crew centre's Profile page.
 
-**Gate not assigned**  
-If the server is unreachable, you'll see "CONTACT GROUND FOR GATE ASSIGNMENT". Start the server with `uvicorn main:app --port 8000`.
+**Gate not assigned** — the embedded local server may not have started; check `~/afv_server.log` and `~/.afv_tracker/afv_tracker.log`. Restarting the app restarts the server.
 
-## Contributors
+**Flight data not appearing on phpVMS** — check your internet connection. Failed writes queue locally (`~/.afv_tracker/outbox.db`) and retry automatically rather than getting dropped.
 
-Beni Esteve aqui
+---
+
+## Credits
+
+phpVMS crew-centre integration built in collaboration with Beni Esteve.

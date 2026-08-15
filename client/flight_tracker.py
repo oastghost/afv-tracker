@@ -121,6 +121,15 @@ class FlightTracker(QObject):
 
         self._prev: Optional[Telemetry] = None
         self._landed: bool = False
+        # True once the aircraft has genuinely flown (airborne for 2+ polls).
+        # Gates the arrival-side ground logic so a post-landing fast taxi is
+        # never mistaken for a second TAKEOFF, and parking never falls back to
+        # PRE-FLIGHT. A single taxi-bump (one poll off-ground) won't set it.
+        self._has_flown: bool = False
+        self._airborne_count: int = 0
+        # Guards flight_complete so it can only fire once per flight even if the
+        # aircraft is nudged out of and back into the PARKED state.
+        self._completed: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -214,19 +223,42 @@ class FlightTracker(QObject):
         # ── On ground ──────────────────────────────────────────────────
         if tel.on_ground:
             self._cruise_stable_since = None   # reset stability timer on ground
+            self._airborne_count = 0
+
+            if self._has_flown:
+                # ── Arrival: landing roll → taxi in → park ──────────────
+                # Once we've flown, the ground is only ever the arrival side.
+                # Never return TAKEOFF or PRE-FLIGHT here.
+                self._landed = True
+                just_touched = self._prev is not None and not self._prev.on_ground
+                if just_touched:
+                    return FlightPhase.LANDING
+                # Parked: stopped with engines shut down, or brakes set & stopped.
+                if not tel.engine_on and (tel.parking_brake or tel.groundspeed_kts <= 1.0):
+                    return FlightPhase.PARKED
+                # Still decelerating down the runway → keep LANDING until taxi speed.
+                if self.phase == FlightPhase.LANDING and tel.groundspeed_kts >= TAXI_SPEED_KTS:
+                    return FlightPhase.LANDING
+                return FlightPhase.TAXI_IN
+
+            # ── Departure: pre-flight → taxi out → takeoff ──────────────
             if tel.groundspeed_kts >= TAXI_SPEED_KTS:
                 return FlightPhase.TAKEOFF
             # Any movement = taxiing — ENG_COMBUSTION is unreliable on many aircraft
             if tel.groundspeed_kts > 1.0:
-                return FlightPhase.TAXI_IN if self._landed else FlightPhase.TAXI_OUT
-            # Stationary: use engine state to distinguish pre-flight from taxi hold
+                return FlightPhase.TAXI_OUT
+            # Stationary with engines off = still pre-flight
             if not tel.engine_on:
-                if tel.parking_brake and self._landed:
-                    return FlightPhase.PARKED
                 return FlightPhase.PRE_FLIGHT
-            return FlightPhase.TAXI_IN if self._landed else FlightPhase.TAXI_OUT
+            return FlightPhase.TAXI_OUT
 
         # ── Airborne ────────────────────────────────────────────────────
+        # Count sustained airborne polls so a real departure latches _has_flown
+        # (a one-poll taxi bump won't). After that, all ground states resolve
+        # to the arrival side above.
+        self._airborne_count += 1
+        if self._airborne_count >= 2:
+            self._has_flown = True
 
         # Approach: below 10 000 ft and close enough to destination
         if alt < APPROACH_ALT_FT and self.phase in (
@@ -309,6 +341,9 @@ class FlightTracker(QObject):
             self._landed = True
 
         elif phase == FlightPhase.PARKED:
+            if self._completed:
+                return   # already finalised this flight — don't re-fire
+            self._completed = True
             self._arrival_time = time.time()
             self._fuel_at_arrival = tel.fuel_lbs
             self._emit_flight_complete()

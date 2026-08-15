@@ -111,6 +111,12 @@ def main():
     # 1. Start the server before the GUI so it's ready when the window appears
     server_proc = _start_server()
 
+    # QtWebEngine (used by the web UI in gui_web) requires shared OpenGL contexts
+    # to be enabled before the QApplication is created — otherwise importing
+    # QWebEngineWidgets later raises "AA_ShareOpenGLContexts must be set…".
+    from PyQt6.QtCore import Qt
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+
     app = QApplication(sys.argv)
     app.setApplicationName("AFV Tracker")
     app.setOrganizationName("Africana Virtual Airways")
@@ -121,7 +127,7 @@ def main():
     # Register in Windows startup so it auto-launches next boot
     _register_windows_startup()
 
-    from gui import MainWindow
+    from gui_web import MainWindow
     window = MainWindow()
 
     # Start hidden — the MSFS watcher will show the window when MSFS launches.

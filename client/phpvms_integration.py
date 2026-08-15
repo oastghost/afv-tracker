@@ -1,6 +1,9 @@
+import json
+import math
 import requests
 import logging
 import config
+from offline_queue import OfflineQueue
 
 log = logging.getLogger(__name__)
 
@@ -8,23 +11,44 @@ log = logging.getLogger(__name__)
 def _to_nm(value) -> float:
     """
     Safely extract a nautical-mile float from a phpVMS distance value.
-    phpVMS may return distance as:
-      - a plain int/float                → use directly
-      - a dict Distance object           → prefer 'nmi'/'nm', fall back to any key
-      - None / missing                   → 0.0
+    phpVMS v7 may return distance as:
+      - a plain int/float                     → use directly
+      - a numeric string                      → parse
+      - a dict Distance object, various shapes:
+          {"nmi": 1234.5, "km": ..., "mi":...}
+          {"distance": 1234.5, "units": "nm"}
+          {"value": 1234.5, "unit": "nmi"}
+      - None / falsy                          → 0.0
+    Logs a warning if the type is unexpected so we can catch future changes.
     """
-    if not value:
+    if value is None:
+        return 0.0
+    if isinstance(value, bool):
         return 0.0
     if isinstance(value, (int, float)):
         return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
     if isinstance(value, dict):
-        for key in ('nmi', 'nm', 'nautical_miles', 'value', 'miles', 'km'):
+        # Prefer nautical-mile keys; then try every numeric value found
+        for key in ('nmi', 'nm', 'nautical_miles', 'distance', 'value', 'miles', 'km'):
             v = value.get(key)
             if v is not None:
                 try:
                     return float(v)
                 except (TypeError, ValueError):
                     continue
+        # Last resort: return first numeric value in the dict
+        for v in value.values():
+            try:
+                f = float(v)
+                return f
+            except (TypeError, ValueError):
+                continue
+    log.warning("_to_nm: unexpected distance type %s — %r", type(value).__name__, value)
     return 0.0
 
 
@@ -34,6 +58,7 @@ class PhpVmsClient:
         self.base_url = ""
         self.api_key = ""
         self.headers = {}
+        self._queue = OfflineQueue()
         self.refresh_credentials()
 
     def refresh_credentials(self):
@@ -69,6 +94,39 @@ class PhpVmsClient:
             log.error("Failed to fetch bids: %s", e)
             return []
 
+    def get_user(self):
+        """
+        Fetch the authenticated pilot's profile + career stats.
+        phpVMS v7: GET /api/user  → data includes name, rank, flights,
+        flight_time (minutes), airline, current_airport_id, avatar, etc.
+        Returns the `data` dict, or {} on failure.
+        """
+        url = f"{self.base_url}/api/user"
+        try:
+            r = requests.get(url, headers=self.headers, timeout=10)
+            r.raise_for_status()
+            return r.json().get('data', {}) or {}
+        except Exception as e:
+            log.error("Failed to fetch user profile: %s", e)
+            return {}
+
+    def get_pireps(self, limit: int = 30):
+        """
+        Fetch the pilot's filed PIREPs (flight logbook).
+        phpVMS v7: GET /api/user/pireps  (paginated). Returns a list of PIREP
+        dicts, newest first, capped at `limit`.
+        """
+        url = f"{self.base_url}/api/user/pireps"
+        try:
+            r = requests.get(url, headers=self.headers,
+                             params={"limit": limit}, timeout=12)
+            r.raise_for_status()
+            data = r.json().get('data', [])
+            return data[:limit] if isinstance(data, list) else []
+        except Exception as e:
+            log.error("Failed to fetch PIREP history: %s", e)
+            return []
+
     def prefile_pirep(self, bid_data, planned_fuel, flight_level, route=""):
         """
         Prefile a PIREP from a phpVMS bid.
@@ -82,6 +140,11 @@ class PhpVmsClient:
         url = f"{self.base_url}/api/pireps/prefile"
         flight = bid_data.get('flight', {})
 
+        # Log the raw distance value so we can diagnose future parsing surprises
+        raw_dist = flight.get('distance')
+        dist_nm  = _to_nm(raw_dist)
+        log.info("Prefile: raw distance=%r → %.1f nm", raw_dist, dist_nm)
+
         payload = {
             "flight_id":          flight.get('id'),
             "airline_id":         flight.get('airline_id'),
@@ -90,13 +153,17 @@ class PhpVmsClient:
             "dpt_airport_id":     flight.get('dpt_airport_id'),
             "arr_airport_id":     flight.get('arr_airport_id'),
             "planned_flight_time": int(flight.get('flight_time') or 0),
-            "planned_distance":   _to_nm(flight.get('distance')),
             "block_fuel":         planned_fuel,
             "level":              int(flight_level) if flight_level else 0,
             "route":              route,
             "flight_type":        flight.get('flight_type', 'J'),
             "source_name":        "Africana Tracker",
         }
+        # planned_distance is optional in phpVMS — only send it when we have a
+        # real, finite, positive value. Sending 0, NaN, Inf, or a wrong type
+        # causes a 400 validation error.
+        if dist_nm > 0 and math.isfinite(dist_nm):
+            payload["planned_distance"] = round(dist_nm, 2)
 
         try:
             r = requests.post(url, headers=self.headers, json=payload)
@@ -125,7 +192,7 @@ class PhpVmsClient:
     }
 
     def update_acars(self, lat, lon, alt, gs, heading, state="Enr",
-                     vs=None):
+                     vs=None, distance_nm: float = None):
         """
         Send a live position update to the phpVMS live map.
 
@@ -134,31 +201,43 @@ class PhpVmsClient:
           Accepted per position: lat, lon, altitude, altitude_msl, altitude_agl,
             heading, vs, gs, ias, transponder, autopilot, fuel, fuel_flow,
             status (free-form), log, sim_time, created_at
-          NOTE: per-position `distance` is NOT accepted — cumulative distance
-          must be pushed via update_pirep_status() onto the PIREP itself.
+
+        `distance` is NOT in PositionRequest validation, but it IS in the Acars
+        model $fillable array and AcarsService::savePosition() uses it to update
+        pirep.distance_flown — which drives the live-map "distance flown" display.
+        Always send cumulative distance here so the live map stays up to date.
         """
         if not self.current_pirep_id:
             return False
 
         url = f"{self.base_url}/api/pireps/{self.current_pirep_id}/acars/position"
+        hdg = int(heading) % 360
         position = {
             "lat":      float(lat),
             "lon":      float(lon),
             "altitude": int(alt),
             "gs":       int(gs),
-            "heading":  int(heading) % 360,
+            "heading":  hdg,
             "status":   self._V7_STATES.get(state, "enroute"),
         }
         if vs is not None:
             position["vs"] = int(vs)
+        if distance_nm is not None and distance_nm >= 0:
+            position["distance"] = round(float(distance_nm), 2)
+        log.info("ACARS pos: hdg=%d°  gs=%d  alt=%d  dist=%.1fnm",
+                 hdg, int(gs), int(alt), distance_nm or 0)
         payload = {"positions": [position]}
 
         try:
             r = requests.post(url, headers=self.headers, json=payload, timeout=5)
-            return r.status_code == 200
+            if r.status_code == 200:
+                return True
+            log.debug("ACARS update got HTTP %s — queuing for retry", r.status_code)
         except Exception as e:
-            log.debug("ACARS update failed: %s", e)
-            return False
+            log.debug("ACARS update failed: %s — queuing for retry", e)
+
+        self._queue.enqueue("acars_position", "POST", url, self.headers, payload)
+        return False
 
     def update_pirep_status(self, status_code: str,
                             flight_time_min: float = None,
@@ -181,24 +260,26 @@ class PhpVmsClient:
             payload["flight_time"] = int(flight_time_min)
         if distance_nm is not None:
             payload["distance"] = round(float(distance_nm), 2)
+        url = f"{self.base_url}/api/pireps/{self.current_pirep_id}"
         try:
-            r = requests.put(
-                f"{self.base_url}/api/pireps/{self.current_pirep_id}",
-                headers=self.headers,
-                json=payload,
-                timeout=5,
-            )
+            r = requests.put(url, headers=self.headers, json=payload, timeout=5)
             if r.status_code == 200:
                 log.info("PIREP %s status → %s  ft=%.0fmin  dist=%.1fnm",
                          self.current_pirep_id, status_code,
                          flight_time_min or 0, distance_nm or 0)
+                # A fresher status just landed — drop any stale queued retry
+                # from an earlier failed push so it can't replay over this.
+                self._queue.clear_kind("pirep_status")
                 return True
-            log.warning("PIREP status update got HTTP %s: %s",
+            log.warning("PIREP status update got HTTP %s: %s — queuing for retry",
                         r.status_code, r.text[:200])
-            return False
         except Exception as e:
-            log.debug("PIREP status update failed: %s", e)
-            return False
+            log.debug("PIREP status update failed: %s — queuing for retry", e)
+
+        # Only the latest status matters — replaying an older queued one
+        # after a newer push already succeeded would revert the live stage.
+        self._queue.enqueue_latest_only("pirep_status", "PUT", url, self.headers, payload)
+        return False
 
     # PirepState enum (app/Models/Enums/PirepState.php):
     #   IN_PROGRESS=0, PENDING=1, ACCEPTED=2, CANCELLED=3,
@@ -262,7 +343,40 @@ class PhpVmsClient:
                      distance_nm, fuel_used)
             return True
         except Exception as e:
-            log.error("PIREP filing failed: %s", e)
+            log.error("PIREP filing failed: %s — queuing for retry", e)
             if hasattr(e, 'response') and e.response is not None:
                 log.error("Server response: %s", e.response.text)
-            return False
+
+        self._queue.enqueue("pirep_file", "POST", url, self.headers, payload)
+        return False
+
+    def retry_pending(self) -> int:
+        """
+        Resend everything sitting in the offline queue (ACARS positions, status
+        pushes, PIREP filings that failed earlier). Safe to call frequently —
+        returns immediately once the queue is empty.
+
+        Stops at the first connection-level failure (likely still offline) so
+        it doesn't hang retrying N items in a row; a bad HTTP response on a
+        single item doesn't block the rest.
+        """
+        sent = 0
+        for row in self._queue.list_pending():
+            try:
+                r = requests.request(
+                    row["method"], row["url"],
+                    headers=json.loads(row["headers"]),
+                    json=json.loads(row["payload"]),
+                    timeout=8,
+                )
+                if 200 <= r.status_code < 300:
+                    self._queue.remove(row["id"])
+                    sent += 1
+                else:
+                    self._queue.mark_attempt(row["id"], f"HTTP {r.status_code}")
+            except Exception as e:
+                self._queue.mark_attempt(row["id"], str(e))
+                break   # probably still offline — stop hammering, try again next cycle
+        if sent:
+            log.info("Offline queue: resent %d queued phpVMS request(s).", sent)
+        return sent

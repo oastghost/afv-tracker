@@ -185,20 +185,22 @@ class SimConnectWorker(QThread):
 
     def _poll(self, ar: "AircraftRequests", prev_on_ground: bool, prev_alt: float) -> Optional[Telemetry]:
         try:
-            # PLANE_HEADING_DEGREES_TRUE is not in the SimConnect Python library's variable
-            # list, so we compute it from magnetic heading + magnetic variation (MAGVAR).
-            # SimConnect MAGVAR: positive = East, negative = West.
-            # True = Magnetic + Variation (East positive).
-            _heading_mag = float(self._get(ar, "PLANE_HEADING_DEGREES_MAGNETIC", 0.0))
-            _magvar = float(self._get(ar, "MAGVAR", 0.0))
-            _heading_true = (_heading_mag + _magvar) % 360.0
+            # PLANE_HEADING_DEGREES_MAGNETIC is misnamed — the Python SimConnect library
+            # requests it in RADIANS (b'Radians' unit), not degrees. MAGVAR is in degrees.
+            # Convert radians → degrees first, then apply the signed variation.
+            # MAGVAR: positive = East, negative = West (standard aviation convention).
+            # True heading = Magnetic heading + Magnetic variation
+            _heading_mag_rad = float(self._get(ar, "PLANE_HEADING_DEGREES_MAGNETIC", 0.0))
+            _heading_mag     = math.degrees(_heading_mag_rad) % 360.0
+            _magvar          = float(self._get(ar, "MAGVAR", 0.0))   # degrees, signed
+            _heading_true    = (_heading_mag + _magvar) % 360.0
 
             tel = Telemetry(
                 # Position
                 latitude=float(self._get(ar, "PLANE_LATITUDE", 0.0)),
                 longitude=float(self._get(ar, "PLANE_LONGITUDE", 0.0)),
                 altitude_ft=float(self._get(ar, "PLANE_ALTITUDE", 0.0)),
-                # Attitude
+                # Attitude (heading_mag in degrees, converted from SimConnect radians)
                 heading_mag=_heading_mag,
                 heading_true=_heading_true,
                 pitch_deg=float(self._get(ar, "PLANE_PITCH_DEGREES", 0.0)),

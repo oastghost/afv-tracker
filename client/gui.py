@@ -25,23 +25,60 @@ from simconnect_client import SimConnectWorker, Telemetry
 from flight_tracker import FlightTracker, FlightPhase, haversine_nm
 from gate_manager import GateManager, GateAssignment
 from network_client import NetworkClient
+from discord_presence import DiscordPresenceWorker
+from phpvms_sync_worker import PhpVmsSyncWorker
+import sounds
 
 from phpvms_integration import PhpVmsClient
 
 log = logging.getLogger(__name__)
 
 # ── Palette constants ──────────────────────────────────────────────────────────
-BG_PRIMARY      = "#0D0D0D"
-BG_SECONDARY    = "#1A1A1A"
-BG_PANEL        = "#242424"
-BG_INPUT        = "#2A2A2A"
-ACCENT_RED      = "#C41E3A"
-ACCENT_RED_DARK = "#9E1830"
-TEXT_PRIMARY    = "#FFFFFF"
-TEXT_SECONDARY  = "#A0A0A0"
-BORDER          = "#2A2A2A"
-SUCCESS         = "#22C55E"
-WARNING         = "#F59E0B"
+# Two full palettes; the active one is selected once at import time from the
+# saved config. Every other line in this file references the plain constant
+# names below (BG_PRIMARY, etc.), so switching themes needs no other changes —
+# it just takes a restart to re-import this module with the new selection.
+_PALETTE_DARK = {
+    "BG_PRIMARY":      "#0D0D0D",
+    "BG_SECONDARY":    "#1A1A1A",
+    "BG_PANEL":        "#242424",
+    "BG_INPUT":        "#2A2A2A",
+    "ACCENT_RED":      "#C41E3A",
+    "ACCENT_RED_DARK": "#9E1830",
+    "TEXT_PRIMARY":    "#FFFFFF",
+    "TEXT_SECONDARY":  "#A0A0A0",
+    "BORDER":          "#2A2A2A",
+    "SUCCESS":         "#22C55E",
+    "WARNING":         "#F59E0B",
+}
+
+_PALETTE_LIGHT = {
+    "BG_PRIMARY":      "#F5F5F7",
+    "BG_SECONDARY":    "#FFFFFF",
+    "BG_PANEL":        "#FFFFFF",
+    "BG_INPUT":        "#EDEDF0",
+    "ACCENT_RED":      "#C41E3A",
+    "ACCENT_RED_DARK": "#9E1830",
+    "TEXT_PRIMARY":    "#1A1A1A",
+    "TEXT_SECONDARY":  "#5A5A5A",
+    "BORDER":          "#DADADD",
+    "SUCCESS":         "#16A34A",
+    "WARNING":         "#D97706",
+}
+
+_active_palette = _PALETTE_LIGHT if config.get("theme", "dark") == "light" else _PALETTE_DARK
+
+BG_PRIMARY      = _active_palette["BG_PRIMARY"]
+BG_SECONDARY    = _active_palette["BG_SECONDARY"]
+BG_PANEL        = _active_palette["BG_PANEL"]
+BG_INPUT        = _active_palette["BG_INPUT"]
+ACCENT_RED      = _active_palette["ACCENT_RED"]
+ACCENT_RED_DARK = _active_palette["ACCENT_RED_DARK"]
+TEXT_PRIMARY    = _active_palette["TEXT_PRIMARY"]
+TEXT_SECONDARY  = _active_palette["TEXT_SECONDARY"]
+BORDER          = _active_palette["BORDER"]
+SUCCESS         = _active_palette["SUCCESS"]
+WARNING         = _active_palette["WARNING"]
 
 FONT_MONO  = "JetBrains Mono, Consolas, Courier New, monospace"
 FONT_LABEL = "Segoe UI, Arial, sans-serif"
@@ -96,8 +133,8 @@ class PilotSetupDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("AFV — Pilot Setup")
         self.setModal(True)
-        self.setMinimumSize(420, 460)
-        self.resize(420, 460)
+        self.setMinimumSize(420, 660)
+        self.resize(420, 660)
         self.setStyleSheet(f"""
             QDialog {{
                 background: {BG_PRIMARY};
@@ -318,6 +355,140 @@ class PilotSetupDialog(QDialog):
         _apply_unit_styles()
         form_layout.addWidget(unit_panel)
 
+        # ── Theme ───────────────────────────────────────
+        theme_panel = QFrame()
+        theme_panel.setStyleSheet(
+            "QFrame {"
+            "background: #181818;"
+            "border: 1px solid #2C2C2C;"
+            "border-radius: 8px;"
+            "}"
+        )
+        theme_panel_layout = QHBoxLayout(theme_panel)
+        theme_panel_layout.setContentsMargins(12, 10, 12, 10)
+        theme_panel_layout.setSpacing(10)
+
+        theme_text = QVBoxLayout()
+        theme_text.setContentsMargins(0, 0, 0, 0)
+        theme_text.setSpacing(2)
+        theme_title = _label("THEME", "#8F96A3", 10, bold=True)
+        theme_title.setStyleSheet(theme_title.styleSheet() + "letter-spacing: 1.6px;")
+        theme_hint = QLabel("Takes effect after restarting AFV Tracker")
+        theme_hint.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 11px; font-family: {FONT_LABEL};"
+        )
+        theme_text.addWidget(theme_title)
+        theme_text.addWidget(theme_hint)
+
+        theme_toggle_row = QHBoxLayout()
+        theme_toggle_row.setContentsMargins(0, 0, 0, 0)
+        theme_toggle_row.setSpacing(0)
+
+        saved_theme = config.get("theme", "dark")
+        self._btn_dark = QPushButton("  DARK  ")
+        self._btn_light = QPushButton("  LIGHT  ")
+        self._btn_dark.setCheckable(True)
+        self._btn_light.setCheckable(True)
+        self._btn_dark.setFixedHeight(34)
+        self._btn_light.setFixedHeight(34)
+        self._btn_dark.setMinimumWidth(68)
+        self._btn_light.setMinimumWidth(68)
+        self._btn_dark.setChecked(saved_theme != "light")
+        self._btn_light.setChecked(saved_theme == "light")
+
+        def _apply_theme_styles():
+            self._btn_dark.setStyleSheet(_toggle_style(self._btn_dark.isChecked()))
+            self._btn_light.setStyleSheet(_toggle_style(self._btn_light.isChecked()))
+
+        def _select_dark():
+            self._btn_dark.setChecked(True)
+            self._btn_light.setChecked(False)
+            _apply_theme_styles()
+
+        def _select_light():
+            self._btn_light.setChecked(True)
+            self._btn_dark.setChecked(False)
+            _apply_theme_styles()
+
+        self._btn_dark.clicked.connect(_select_dark)
+        self._btn_light.clicked.connect(_select_light)
+        theme_toggle_row.addWidget(self._btn_dark)
+        theme_toggle_row.addWidget(self._btn_light)
+        theme_panel_layout.addLayout(theme_text, 1)
+        theme_panel_layout.addLayout(theme_toggle_row, 0)
+        _apply_theme_styles()
+        form_layout.addWidget(theme_panel)
+
+        # ── Discord Rich Presence / Sound cue toggles ────
+        prefs_panel = QFrame()
+        prefs_panel.setStyleSheet(
+            "QFrame {"
+            "background: #181818;"
+            "border: 1px solid #2C2C2C;"
+            "border-radius: 8px;"
+            "}"
+        )
+        prefs_layout = QVBoxLayout(prefs_panel)
+        prefs_layout.setContentsMargins(12, 10, 12, 10)
+        prefs_layout.setSpacing(10)
+
+        def _bool_toggle_style(on: bool) -> str:
+            bg = ACCENT_RED if on else BG_INPUT
+            color = TEXT_PRIMARY if on else TEXT_SECONDARY
+            return (
+                "QPushButton {"
+                f"background: {bg}; color: {color};"
+                "border: 1px solid #333333; border-radius: 6px;"
+                f"font-size: 10px; font-weight: 700; font-family: {FONT_LABEL};"
+                "}"
+            )
+
+        def _pref_row(title_text: str, hint_text: str, initial: bool) -> QPushButton:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(10)
+
+            text_col = QVBoxLayout()
+            text_col.setContentsMargins(0, 0, 0, 0)
+            text_col.setSpacing(2)
+            title = _label(title_text, "#8F96A3", 10, bold=True)
+            title.setStyleSheet(title.styleSheet() + "letter-spacing: 1.6px;")
+            hint = QLabel(hint_text)
+            hint.setStyleSheet(
+                f"color: {TEXT_SECONDARY}; font-size: 11px; font-family: {FONT_LABEL};"
+            )
+            text_col.addWidget(title)
+            text_col.addWidget(hint)
+
+            btn = QPushButton("ON" if initial else "OFF")
+            btn.setCheckable(True)
+            btn.setChecked(initial)
+            btn.setFixedSize(56, 28)
+            btn.setStyleSheet(_bool_toggle_style(initial))
+
+            def _on_toggled(checked: bool):
+                btn.setText("ON" if checked else "OFF")
+                btn.setStyleSheet(_bool_toggle_style(checked))
+
+            btn.toggled.connect(_on_toggled)
+
+            row.addLayout(text_col, 1)
+            row.addWidget(btn, 0)
+            prefs_layout.addLayout(row)
+            return btn
+
+        self._discord_btn = _pref_row(
+            "DISCORD RICH PRESENCE",
+            "Show your current flight on Discord — restart to apply",
+            config.get("discord_rpc_enabled", True),
+        )
+        self._sound_btn = _pref_row(
+            "SOUND CUES",
+            "Play a tone on takeoff, landing, and gate assignment",
+            config.get("sound_enabled", True),
+        )
+        form_layout.addWidget(prefs_panel)
+
         layout.addWidget(form_panel)
         root.addWidget(body, 1)
 
@@ -367,8 +538,12 @@ class PilotSetupDialog(QDialog):
         root.addWidget(footer)
 
     def get_values(self) -> tuple:
-        """Returns (vatsim_cid, simbrief_id, pilot_name, discord, weight_unit, va_url, pilot_key)."""
-        unit = "KG" if self._btn_kg.isChecked() else "LBS"
+        """
+        Returns (vatsim_cid, simbrief_id, pilot_name, discord, weight_unit,
+                 va_url, pilot_key, theme, discord_rpc_enabled, sound_enabled).
+        """
+        unit  = "KG" if self._btn_kg.isChecked() else "LBS"
+        theme = "light" if self._btn_light.isChecked() else "dark"
         return (
             self.vatsim_edit.text().strip(),
             self.simbrief_edit.text().strip(),
@@ -377,6 +552,9 @@ class PilotSetupDialog(QDialog):
             unit,
             self.va_url_edit.text().strip(),
             self.pilot_key_edit.text().strip(),
+            theme,
+            self._discord_btn.isChecked(),
+            self._sound_btn.isChecked(),
         )
 
 
@@ -1055,6 +1233,9 @@ class MainWindow(QMainWindow):
     _gate_board_ready  = pyqtSignal(str, object)   # (airport_icao, gates_list)
     _phpvms_bid_ready  = pyqtSignal(object)        # bid dict on success, None on failure
     _phpvms_acars_ok   = pyqtSignal(bool)          # ACARS update result from background thread
+    _queue_flush_done  = pyqtSignal(int)           # count of offline-queued requests resent
+    _pirep_file_result = pyqtSignal(bool)          # final PIREP filing result
+    _prefile_result    = pyqtSignal(object)        # prefile PIREP id (str) or None on failure
 
     def __init__(self):
         super().__init__()
@@ -1084,20 +1265,36 @@ class MainWindow(QMainWindow):
         self._vms_bid_panel = BidPanel()
         self._acars_last_sent = 0.0  # monotonic timestamp of last successful ACARS push
 
+        # Every phpVMS write (status push, ACARS position, PIREP filing, offline
+        # retries) is funneled through this single worker so requests are always
+        # sent in the order they actually happened — see phpvms_sync_worker.py.
+        self._vms_sync = PhpVmsSyncWorker(self)
+        self._vms_sync.start()
+
         # Network (multi-pilot WebSocket)
         self._net_client: Optional[NetworkClient] = None
         self._online_pilots: dict[str, dict] = {}
+
+        # Discord Rich Presence (no-ops if disabled or no client ID configured)
+        self._discord: Optional[DiscordPresenceWorker] = None
+        if self._cfg.get("discord_rpc_enabled") and self._cfg.get("discord_client_id"):
+            self._discord = DiscordPresenceWorker(self._cfg["discord_client_id"], self)
+            self._discord.start()
 
         self._apply_global_style()
         self._build_ui()
         self._setup_clock_timer()
         self._setup_tray()
         self._setup_msfs_watcher()
+        self._setup_queue_retry_timer()
 
         # Wire cross-thread signals
         self._gate_board_ready.connect(self._apply_gate_board)
         self._phpvms_bid_ready.connect(self._on_bid_ready)
         self._phpvms_acars_ok.connect(self._on_acars_result)
+        self._queue_flush_done.connect(self._on_queue_flush_done)
+        self._pirep_file_result.connect(self._on_pirep_filed)
+        self._prefile_result.connect(self._on_prefile_result)
 
         # Auto-fetch if credentials already saved
         if self._cfg.get("vatsim_cid"):
@@ -1357,11 +1554,7 @@ class MainWindow(QMainWindow):
             8000,
         )
         QApplication.alert(self, 0)   # flash taskbar until window is focused
-        try:
-            import winsound
-            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
-        except Exception:
-            pass
+        sounds.play("gate_assigned")
 
     # ------------------------------------------------------------------
     # MSFS process watcher — auto-show and auto-track
@@ -1422,9 +1615,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _open_setup(self):
+        prev_theme    = config.get("theme", "dark")
+        prev_discord  = config.get("discord_rpc_enabled", True)
         dlg = PilotSetupDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            vatsim_cid, simbrief_id, name, discord, unit, va_url, pilot_key = dlg.get_values()
+            (vatsim_cid, simbrief_id, name, discord, unit, va_url, pilot_key,
+             theme, discord_rpc_enabled, sound_enabled) = dlg.get_values()
             if vatsim_cid:
                 config.set_value("vatsim_cid",  vatsim_cid)
                 config.set_value("simbrief_id", simbrief_id)
@@ -1433,6 +1629,9 @@ class MainWindow(QMainWindow):
                 config.set_value("weight_unit", unit)
                 config.set_value("VA_URL", va_url)
                 config.set_value("Pilot_Key", pilot_key)
+                config.set_value("theme", theme)
+                config.set_value("discord_rpc_enabled", discord_rpc_enabled)
+                config.set_value("sound_enabled", sound_enabled)
                 self._vms.refresh_credentials()
                 self._cfg = config.load_config()
                 self._pilot_label.setText(name or vatsim_cid)
@@ -1446,6 +1645,12 @@ class MainWindow(QMainWindow):
                     # Credentials changed but OFP already loaded — re-try bid fetch
                     self._on_ofp_loaded(self._ofp)
                 self._start_network_client()
+                if theme != prev_theme or discord_rpc_enabled != prev_discord:
+                    QMessageBox.information(
+                        self, "Restart required",
+                        "Restart AFV Tracker for the theme / Discord Rich "
+                        "Presence change to take effect."
+                    )
 
     def _register_pilot(self, vatsim_cid: str, simbrief_id: str,
                         name: str, discord: str):
@@ -1562,27 +1767,41 @@ class MainWindow(QMainWindow):
         self._vms_bid_panel.load_bid(bid)
         self._statusbar.showMessage("phpVMS bid matched — prefiling PIREP…")
         if self._ofp:
-            pirep_id = self._vms.prefile_pirep(
-                bid_data=bid,
-                planned_fuel=self._ofp.fuel.total_lbs,
-                flight_level=self._ofp.cruise_altitude,
-                route=self._ofp.route or "",
-            )
-            if pirep_id:
-                self._statusbar.showMessage(f"PIREP prefiled (ID {pirep_id}) — ready to fly.")
-                # Phase changes that fired before the prefile completed had no PIREP id,
-                # so the status push was skipped. Push the current phase now so phpVMS
-                # doesn't stay stuck on "Initiated" and its flight-time counter starts.
-                if self._flight_tracker:
-                    _cur_phase = self._flight_tracker.phase
-                    _cur_status = self._PIREP_STATUS_MAP.get(_cur_phase)
-                    if _cur_status:
-                        def _push_initial_status():
-                            self._vms.update_pirep_status(_cur_status)
-                        threading.Thread(target=_push_initial_status, daemon=True).start()
-            else:
-                self._statusbar.showMessage("phpVMS: bid matched but prefile failed — check logs.")
-                self._dot_phpvms.set_connected(False, "phpVMS")
+            planned_fuel  = self._ofp.fuel.total_lbs
+            flight_level  = self._ofp.cruise_altitude
+            route         = self._ofp.route or ""
+
+            def _prefile():
+                pirep_id = self._vms.prefile_pirep(
+                    bid_data=bid,
+                    planned_fuel=planned_fuel,
+                    flight_level=flight_level,
+                    route=route,
+                )
+                self._prefile_result.emit(pirep_id)
+
+            # Queued (not called directly) so it can't block the GUI thread on
+            # network I/O, and so it can't race a phase-change status push that
+            # fires while this is still in flight.
+            self._vms_sync.submit(_prefile)
+
+    @pyqtSlot(object)
+    def _on_prefile_result(self, pirep_id):
+        if pirep_id:
+            self._statusbar.showMessage(f"PIREP prefiled (ID {pirep_id}) — ready to fly.")
+            # Phase changes that fired before the prefile completed had no PIREP id,
+            # so the status push was skipped. Push the current phase now so phpVMS
+            # doesn't stay stuck on "Initiated" and its flight-time counter starts.
+            if self._flight_tracker:
+                _cur_phase = self._flight_tracker.phase
+                _cur_status = self._PIREP_STATUS_MAP.get(_cur_phase)
+                if _cur_status:
+                    def _push_initial_status():
+                        self._vms.update_pirep_status(_cur_status)
+                    self._vms_sync.submit(_push_initial_status)
+        else:
+            self._statusbar.showMessage("phpVMS: bid matched but prefile failed — check logs.")
+            self._dot_phpvms.set_connected(False, "phpVMS")
 
     @pyqtSlot(bool)
     def _on_acars_result(self, ok: bool):
@@ -1601,6 +1820,34 @@ class MainWindow(QMainWindow):
             self._phpvms_acars_ok.emit(active)
 
         threading.Thread(target=_health, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Offline queue — retries ACARS/PIREP requests that failed to send
+    # ------------------------------------------------------------------
+
+    def _setup_queue_retry_timer(self):
+        timer = QTimer(self)
+        timer.timeout.connect(self._retry_offline_queue)
+        timer.start(45_000)
+        # Also try shortly after startup in case items are left over from a
+        # previous session that closed while offline.
+        QTimer.singleShot(5_000, self._retry_offline_queue)
+
+    @pyqtSlot()
+    def _retry_offline_queue(self):
+        def _retry():
+            sent = self._vms.retry_pending()
+            if sent:
+                self._queue_flush_done.emit(sent)
+        # Goes through the same serialized worker as live pushes so a replayed
+        # queued item can never race a fresher live update.
+        self._vms_sync.submit(_retry)
+
+    @pyqtSlot(int)
+    def _on_queue_flush_done(self, sent: int):
+        self._statusbar.showMessage(
+            f"Resent {sent} queued phpVMS update(s) after reconnecting."
+        )
 
     @pyqtSlot(str)
     def _on_ofp_error(self, msg: str):
@@ -1630,6 +1877,12 @@ class MainWindow(QMainWindow):
         self._flight_tracker.approach_reached.connect(self._on_approach)
         self._flight_tracker.flight_complete.connect(self._on_flight_complete)
 
+        # Discord presence: fix the "elapsed" start time once so it counts up
+        # continuously across the whole flight instead of resetting per phase.
+        self._discord_start_ts = time.time()
+        if self._discord:
+            self._push_discord_presence(FlightPhase.PRE_FLIGHT)
+
         interval = self._cfg.get("simconnect_poll_interval", 5)
         self._simconnect_worker = SimConnectWorker(interval, self)
         self._simconnect_worker.telemetry_update.connect(self._on_telemetry)
@@ -1657,6 +1910,9 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "_pirep_health_timer"):
             self._pirep_health_timer.stop()
+
+        if self._discord:
+            self._discord.clear_activity()
 
         self._tracking = False
         self._track_btn.setText("▶  START TRACKING")
@@ -1706,6 +1962,7 @@ class MainWindow(QMainWindow):
                         ok = self._vms.update_acars(
                             lat=_lat, lon=_lon, alt=_alt,
                             gs=_gs, heading=_hdg, state=_state, vs=_vs,
+                            distance_nm=_distance_nm,
                         )
                         if _pirep_status:
                             self._vms.update_pirep_status(
@@ -1715,7 +1972,7 @@ class MainWindow(QMainWindow):
                             )
                         self._phpvms_acars_ok.emit(ok)
 
-                    threading.Thread(target=_send_acars, daemon=True).start()
+                    self._vms_sync.submit(_send_acars)
                 except Exception:
                     log.exception("ACARS update scheduling failed")
         # Broadcast position to other pilots on the network
@@ -1738,10 +1995,28 @@ class MainWindow(QMainWindow):
         FlightPhase.PARKED:     "ARR",   # ARRIVED (file_pirep also sets this)
     }
 
+    def _push_discord_presence(self, phase: FlightPhase):
+        if not self._discord:
+            return
+        origin = self._ofp.origin_icao if self._ofp else "????"
+        dest   = self._ofp.destination_icao if self._ofp else "????"
+        callsign = self._ofp.callsign if self._ofp else ""
+        state = f"{phase.value} · {callsign}" if callsign else phase.value
+        self._discord.update_activity(
+            details=f"{origin} → {dest}",
+            state=state,
+            start_ts=getattr(self, "_discord_start_ts", None),
+        )
+
     @pyqtSlot(object)
     def _on_phase_changed(self, phase: FlightPhase):
         self._status_panel.update_phase(phase)
         self._statusbar.showMessage(f"Phase: {phase.value}")
+        self._push_discord_presence(phase)
+        if phase == FlightPhase.TAKEOFF:
+            sounds.play("flight_start")
+        elif phase == FlightPhase.LANDING:
+            sounds.play("landing")
         # Force an immediate ACARS update on approach so phpVMS gets the status
         # without waiting up to 30 s for the next scheduled tick.
         if phase == FlightPhase.APPROACH:
@@ -1750,9 +2025,18 @@ class MainWindow(QMainWindow):
         try:
             status_code = self._PIREP_STATUS_MAP.get(phase)
             if status_code and self._vms.current_pirep_id:
+                _elapsed_min = (self._flight_tracker.elapsed_seconds / 60.0
+                                if self._flight_tracker else None)
+                _dist_nm = (self._flight_tracker.distance_flown_nm
+                            if self._flight_tracker else None)
+
                 def _push_status():
-                    self._vms.update_pirep_status(status_code)
-                threading.Thread(target=_push_status, daemon=True).start()
+                    self._vms.update_pirep_status(
+                        status_code,
+                        flight_time_min=_elapsed_min,
+                        distance_nm=_dist_nm,
+                    )
+                self._vms_sync.submit(_push_status)
         except Exception:
             log.exception("PIREP status push failed for phase %s", phase)
 
@@ -1824,6 +2108,7 @@ class MainWindow(QMainWindow):
         self._status_sim.setStyleSheet(f"color: {ACCENT_RED}; font-size: 11px;")
         self._statusbar.showMessage(f"SimConnect: {msg}")
         log.error("SimConnect fatal error: %s", msg)
+        sounds.play("error")
         self._stop_tracking()
 
     @pyqtSlot(dict)
@@ -1850,24 +2135,36 @@ class MainWindow(QMainWindow):
             f"Landing rate: {data.get('landing_rate_fpm') or 'N/A'} fpm"
         )
 
-        # File the PIREP on phpVMS
+        # File the PIREP on phpVMS — queued on the sync worker (not called
+        # directly here) so it (a) doesn't block the GUI thread on network I/O
+        # and (b) runs strictly after any still-pending ACARS/status pushes for
+        # this flight instead of racing them.
         flight_time_mins = int(data['flight_time_sec']) // 60
         fuel_used        = data.get('fuel_used_lbs', 0) or 0
         distance_nm      = data.get('distance_flown_nm', 0) or 0
         landing_rate     = data.get('landing_rate_fpm') or 0
-        success = self._vms.file_pirep(
-            flight_time_min=flight_time_mins,
-            fuel_used=fuel_used,
-            distance_nm=distance_nm,
-            landing_rate=landing_rate,
-            log_text=(
-                f"Filed by Africana Tracker.\n"
-                f"Block time: {flight_time_mins // 60:02d}:{flight_time_mins % 60:02d}\n"
-                f"Distance flown: {distance_nm:.1f} nm\n"
-                f"Fuel used: {fuel_used:.0f} lbs\n"
-                f"Landing rate: {landing_rate:.0f} fpm"
-            ),
+        log_text = (
+            f"Filed by Africana Tracker.\n"
+            f"Block time: {flight_time_mins // 60:02d}:{flight_time_mins % 60:02d}\n"
+            f"Distance flown: {distance_nm:.1f} nm\n"
+            f"Fuel used: {fuel_used:.0f} lbs\n"
+            f"Landing rate: {landing_rate:.0f} fpm"
         )
+
+        def _file():
+            ok = self._vms.file_pirep(
+                flight_time_min=flight_time_mins,
+                fuel_used=fuel_used,
+                distance_nm=distance_nm,
+                landing_rate=landing_rate,
+                log_text=log_text,
+            )
+            self._pirep_file_result.emit(ok)
+
+        self._vms_sync.submit(_file)
+
+    @pyqtSlot(bool)
+    def _on_pirep_filed(self, success: bool):
         if success:
             log.info("PIREP filed successfully on Africana Virtual Airways.")
             self._statusbar.showMessage("PIREP filed on phpVMS.")
@@ -1992,6 +2289,9 @@ class MainWindow(QMainWindow):
         if self._net_client:
             self._net_client.stop()
             self._net_client.wait(2000)
+        if self._discord:
+            self._discord.close()
+        self._vms_sync.close()
         QApplication.quit()
 
 
