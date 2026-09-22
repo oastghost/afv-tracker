@@ -76,22 +76,27 @@ class Telemetry:
 
 def detect_sim_version() -> str:
     """
-    Detect whether MSFS 2020 or 2024 is the running instance by inspecting
-    the FlightSimulator.exe executable path via wmic.
-    Returns 'MSFS 2024', 'MSFS 2020', or 'MSFS' if undetermined.
+    Detect which SimConnect-speaking sim is running by inspecting known
+    process names via wmic. Covers MSFS 2020/2024, FSX, and Prepar3D — all
+    of them expose the same SimConnect pipe, so SimConnectWorker talks to
+    whichever one is actually up without any code changes; this just picks
+    the right display label.
     """
     try:
         import subprocess
         result = subprocess.run(
-            ["wmic", "process", "where", "name='FlightSimulator.exe'",
-             "get", "ExecutablePath"],
+            ["wmic", "process", "get", "ExecutablePath"],
             capture_output=True, text=True, timeout=5,
         )
-        path = result.stdout.lower()
-        if "2024" in path or "fs24" in path:
-            return "MSFS 2024"
-        if "flightsimulator" in path:
+        procs = result.stdout.lower()
+        if "flightsimulator" in procs:
+            if "2024" in procs or "fs24" in procs:
+                return "MSFS 2024"
             return "MSFS 2020"
+        if "prepar3d" in procs:
+            return "Prepar3D"
+        if "fsx.exe" in procs:
+            return "FSX"
     except Exception:
         pass
     return "MSFS"
@@ -211,7 +216,7 @@ class SimConnectWorker(QThread):
             _heading_true    = (_heading_mag + _magvar) % 360.0
 
             tel = Telemetry(
-                latitude=float(test_val),
+                latitude=float(self._get(ar, "PLANE_LATITUDE", 0.0)),
                 longitude=float(self._get(ar, "PLANE_LONGITUDE", 0.0)),
                 altitude_ft=float(self._get(ar, "PLANE_ALTITUDE", 0.0)),
                 # Attitude (heading_mag in degrees, converted from SimConnect radians)
@@ -223,7 +228,7 @@ class SimConnectWorker(QThread):
                 ias_kts=float(self._get(ar, "AIRSPEED_INDICATED", 0.0)),
                 tas_kts=float(self._get(ar, "AIRSPEED_TRUE", 0.0)),
                 mach=float(self._get(ar, "AIRSPEED_MACH", 0.0)),
-                vertical_speed_fpm=float(self._get(ar, "VERTICAL_SPEED", 0.0)) * 60,
+                vertical_speed_fpm=float(self._get(ar, "VERTICAL_SPEED", 0.0)),  # library unit is already feet/minute
                 # Engines
                 engine_on=bool(int(self._get(ar, "GENERAL_ENG_COMBUSTION:1", 0))),
                 eng2_on=bool(int(self._get(ar, "GENERAL_ENG_COMBUSTION:2", 0))),

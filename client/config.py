@@ -16,6 +16,9 @@ DEFAULTS = {
     "discord":      "",          # Discord handle (e.g. username#0000 or just username)
     "server_url":   "http://localhost:8765",
     "simconnect_poll_interval": 5,
+    "sim_type":     "msfs",      # "msfs", "xplane", "fsx", or "p3d" — which telemetry backend to use
+    "xplane_host":  "",          # optional: skip auto-discovery, connect to X-Plane directly
+    "xplane_port":  49000,       # X-Plane's RREF UDP port (Settings > Network > "Accept incoming connections")
     "weight_unit":  "LBS",       # "LBS" or "KG"
     "theme":        "dark",
     "VA_URL":  "https://africanava.ddns.net",

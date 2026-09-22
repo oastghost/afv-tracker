@@ -439,6 +439,8 @@ const App = {
     v('s-name', cfg.pilot_name); v('s-discord', cfg.discord);
     v('s-vaurl', cfg.VA_URL); v('s-pilotkey', cfg.Pilot_Key);
     v('s-weight', cfg.weight_unit || 'LBS'); v('s-poll', cfg.simconnect_poll_interval || 5);
+    v('s-simtype', cfg.sim_type || 'msfs'); v('s-xplane-host', cfg.xplane_host);
+    v('s-xplane-port', cfg.xplane_port || 49000);
     c('s-sound', cfg.sound_enabled); c('s-discord-rpc', cfg.discord_rpc_enabled);
   },
   _saveSettings() {
@@ -449,6 +451,8 @@ const App = {
       pilot_name: g('s-name').trim(), discord: g('s-discord').trim(),
       VA_URL: g('s-vaurl').trim(), Pilot_Key: g('s-pilotkey').trim(),
       weight_unit: g('s-weight'), simconnect_poll_interval: parseInt(g('s-poll')) || 5,
+      sim_type: g('s-simtype'), xplane_host: g('s-xplane-host').trim(),
+      xplane_port: parseInt(g('s-xplane-port')) || 49000,
       sound_enabled: gc('s-sound'), discord_rpc_enabled: gc('s-discord-rpc'),
     });
   },

@@ -7,6 +7,11 @@ PyQt6-WebEngine>=6.6.0     # QWebEngineView host for the web-based UI (client/we
 # ── MSFS SimConnect (client only) ─────────────────────────────────────────────
 SimConnect>=0.4.5
 
+# ── X-Plane 11/12 (client only) ────────────────────────────────────────────────
+# No package needed — X-Plane telemetry uses its native UDP protocol (BECN
+# beacon discovery + RREF dataref subscription), implemented with only the
+# standard library (socket, struct). See client/xplane_client.py.
+
 # ── Backend API ───────────────────────────────────────────────────────────────
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0

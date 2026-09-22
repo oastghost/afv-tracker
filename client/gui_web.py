@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, pyqtSlot, QObject
+from PyQt6.QtCore import Qt, QTimer, QThread, QUrl, pyqtSignal, pyqtSlot, QObject
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QMainWindow, QApplication, QSystemTrayIcon, QMenu
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -28,7 +28,8 @@ from PyQt6.QtWebChannel import QWebChannel
 import config
 import sounds
 from simbrief import OFP
-from simconnect_client import SimConnectWorker, Telemetry
+from simconnect_client import Telemetry
+from sim_factory import build_sim_worker, SIM_LABELS
 from flight_tracker import FlightTracker, FlightPhase
 from gate_manager import GateManager, GateAssignment
 from network_client import NetworkClient
@@ -128,7 +129,7 @@ class MainWindow(QMainWindow):
         self._pending_pirep: Optional[dict] = None
 
         # ── Backend workers / managers (reused unchanged) ────────────────
-        self._simconnect_worker: Optional[SimConnectWorker] = None
+        self._simconnect_worker: Optional[QThread] = None
         self._flight_tracker: Optional[FlightTracker] = None
         self._simbrief_worker: Optional[SimBriefFetchWorker] = None
         self._gate_worker: Optional[GateFetchWorker] = None
@@ -313,7 +314,8 @@ class MainWindow(QMainWindow):
         for key in ("vatsim_cid", "simbrief_id", "pilot_name", "discord",
                     "VA_URL", "Pilot_Key", "weight_unit", "theme",
                     "sound_enabled", "discord_rpc_enabled", "discord_client_id",
-                    "simconnect_poll_interval", "server_url"):
+                    "simconnect_poll_interval", "server_url",
+                    "sim_type", "xplane_host", "xplane_port"):
             if key in payload:
                 cfg[key] = payload[key]
         config.save_config(cfg)
@@ -572,7 +574,7 @@ class MainWindow(QMainWindow):
             self._push_discord_presence(FlightPhase.PRE_FLIGHT)
 
         interval = self._cfg.get("simconnect_poll_interval", 5)
-        self._simconnect_worker = SimConnectWorker(interval, self)
+        self._simconnect_worker = build_sim_worker(self._cfg, interval, self)
         self._simconnect_worker.telemetry_update.connect(self._on_telemetry)
         self._simconnect_worker.connected.connect(self._on_sim_connected)
         self._simconnect_worker.disconnected.connect(self._on_sim_disconnected)
@@ -587,7 +589,8 @@ class MainWindow(QMainWindow):
         self._gate_requested = False
         self.bridge.emit_event("tracking", {"active": True})
         self.bridge.emit_event("gate", None)   # clear any stale gate banner
-        self.bridge.emit_event("toast", {"level": "info", "message": "Connecting to MSFS…"})
+        sim_label = SIM_LABELS.get(self._cfg.get("sim_type", "msfs"), "Simulator")
+        self.bridge.emit_event("toast", {"level": "info", "message": f"Connecting to {sim_label}…"})
 
     def _stop_tracking(self):
         if self._simconnect_worker:
@@ -628,7 +631,7 @@ class MainWindow(QMainWindow):
             _dist_flown = self._flight_tracker.distance_flown_nm
             _ft_min = elapsed / 60.0
             _status = _PIREP_STATUS_MAP.get(phase)
-            _vs = int(getattr(tel, "vertical_speed_fpm", 0) or 0)
+            _vs = int(round(self._flight_tracker.vertical_speed_fpm))
 
             def _send_acars():
                 ok = self._vms.update_acars(
@@ -707,7 +710,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_sim_error(self, msg: str):
         self.bridge.emit_event("sim", {"connected": False, "error": True})
-        self.bridge.emit_event("toast", {"level": "error", "message": f"SimConnect: {msg}"})
+        self.bridge.emit_event("toast", {"level": "error", "message": f"Sim error: {msg}"})
         sounds.play("error")
         self._stop_tracking()
 
@@ -918,7 +921,7 @@ class MainWindow(QMainWindow):
             "ias_kts": round(tel.ias_kts), "tas_kts": round(tel.tas_kts),
             "gs_kts": round(tel.groundspeed_kts),
             "mach": round(tel.mach, 3),
-            "vs_fpm": round(tel.vertical_speed_fpm),
+            "vs_fpm": round(self._flight_tracker.vertical_speed_fpm) if self._flight_tracker else 0,
             "fuel_lbs": round(tel.fuel_lbs),
             "on_ground": tel.on_ground,
             "gear_down": tel.gear_down,

@@ -35,6 +35,13 @@ OutputDir=dist\installer
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
+[InstallDelete]
+; Wipe the previous install's files before copying the new build in, so an
+; update never leaves stale/renamed files behind from an older version.
+; Runs after CloseApplications has already stopped the running exe. Config
+; lives in %USERPROFILE%\.afv_tracker, outside {app}, so it's untouched.
+Type: filesandordirs; Name: "{app}"
+
 [Files]
 Source: "dist\AFV Tracker\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 

@@ -219,6 +219,11 @@
               <select id="s-weight"><option value="LBS">Pounds (lbs)</option><option value="KG">Kilograms (kg)</option></select>
             </label>
             <label class="field"><span>SimConnect Poll (s)</span><input id="s-poll" type="number" min="1" max="30" value="5"></label>
+            <label class="field"><span>Simulator</span>
+              <select id="s-simtype"><option value="msfs">MSFS 2020 / 2024</option><option value="xplane">X-Plane 11 / 12</option><option value="fsx">FSX</option><option value="p3d">Prepar3D</option></select>
+            </label>
+            <label class="field"><span>X-Plane Host (optional)</span><input id="s-xplane-host" type="text" placeholder="auto-detect"></label>
+            <label class="field"><span>X-Plane Port</span><input id="s-xplane-port" type="number" min="1" max="65535" value="49000"></label>
             <label class="toggle-field"><span>Sound cues</span><input id="s-sound" type="checkbox" class="switch"></label>
             <label class="toggle-field"><span>Discord Rich Presence</span><input id="s-discord-rpc" type="checkbox" class="switch"></label>
           </div>

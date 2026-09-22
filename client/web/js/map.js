@@ -119,7 +119,9 @@ const AfvMap = (() => {
   function updateAircraft(lat, lon, hdg) {
     lastAc = { lat, lon, hdg };
     if (!ready) return;
-    if (!lat && !lon) return;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || !lat || !lon) return;
+    const prev = trail[trail.length - 1];
+    if (prev && (Math.abs(prev[0] - lon) > 5 || Math.abs(prev[1] - lat) > 5)) return;  // reject glitch fixes
     _placeAircraft(lon, lat, hdg);
     trail.push([lon, lat]);
     if (trail.length > 4000) trail.shift();

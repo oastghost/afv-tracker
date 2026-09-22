@@ -60,7 +60,19 @@ CLIMB_VS_FPM      =  300.0   # above this → CLIMB
 DESCENT_VS_FPM    = -300.0   # below this → DESCENT
 CRUISE_EXIT_FPM   = -500.0   # below this while in CRUISE → leave cruise
 
-VS_SMOOTH_SAMPLES = 4        # rolling-average window for vertical speed
+VS_SMOOTH_SAMPLES = 4        # rolling-average window applied to the computed VS slope
+
+# Vertical speed is NOT read from the sim's instantaneous VS variable — on every
+# backend (SimConnect, X-Plane RREF, and by extension FSX/P3D which share the
+# SimConnect path) that value spikes wildly with turbulence, prop wash and
+# frame hitches. Instead — same approach as LittleNavmap — we derive our own
+# rate of climb from the altitude trend over a short window of real polls.
+ALT_SLOPE_WINDOW_SAMPLES = 3   # altitude samples spanning ~1-2 poll intervals
+
+# Don't allow a DESCENT phase until this fraction of the route has been flown.
+# Prevents a transient VS dip at cruise (turbulence, a step climb/descent, a
+# momentary autopilot correction) from being misread as top-of-descent.
+DESCENT_MIN_PROGRESS = 0.80
 
 
 def haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -102,8 +114,12 @@ class FlightTracker(QObject):
         self._cruise_stable_since: Optional[float] = None
         self._cruise_ref_alt: float = 0.0
 
-        # Rolling VS smoother — filters SimConnect noise spikes
+        # Altitude samples (timestamp, altitude_ft) used to derive our own VS —
+        # see ALT_SLOPE_WINDOW_SAMPLES above.
+        self._alt_history: deque = deque(maxlen=ALT_SLOPE_WINDOW_SAMPLES)
+        # Rolling smoother applied to the derived VS slope — irons out residual noise
         self._vs_history: deque = deque(maxlen=VS_SMOOTH_SAMPLES)
+        self._vs_fpm: float = 0.0
 
         # Metrics — clock stays None until we receive real telemetry data.
         # This prevents the clock running while SimConnect is connected but
@@ -170,7 +186,8 @@ class FlightTracker(QObject):
             log.info("Movement detected — clock started, fuel %.0f lbs",
                      self._fuel_at_departure)
 
-        new_phase = self._compute_phase(tel)
+        vs = self._update_vertical_speed(tel)
+        new_phase = self._compute_phase(tel, vs)
         if new_phase != self.phase:
             log.info("Phase: %s → %s", self.phase.value, new_phase.value)
             self.phase = new_phase
@@ -197,6 +214,25 @@ class FlightTracker(QObject):
         return self._distance_flown_nm
 
     @property
+    def vertical_speed_fpm(self) -> float:
+        """Our own smoothed rate of climb/descent, derived from altitude trend —
+        not the sim's raw (and often spiky) instantaneous VS reading."""
+        return self._vs_fpm
+
+    @property
+    def flight_progress(self) -> float:
+        """Rough fraction of the route flown so far (0-1), estimated from
+        distance flown vs. remaining distance to destination. Returns 1.0
+        (i.e. "unrestricted") when the destination isn't known yet."""
+        dist_to_dest = self.distance_to_dest_nm
+        if not math.isfinite(dist_to_dest):
+            return 1.0
+        total = self._distance_flown_nm + dist_to_dest
+        if total <= 0:
+            return 0.0
+        return self._distance_flown_nm / total
+
+    @property
     def distance_to_dest_nm(self) -> float:
         if self._last_lat is None or (self.dest_lat == 0 and self.dest_lon == 0):
             return float("inf")  # unknown destination — never triggers distance thresholds
@@ -210,15 +246,38 @@ class FlightTracker(QObject):
         return end - self._departure_time
 
     # ------------------------------------------------------------------
+    # Vertical speed (own derivation — see ALT_SLOPE_WINDOW_SAMPLES)
+    # ------------------------------------------------------------------
+
+    def _update_vertical_speed(self, tel: Telemetry) -> float:
+        """
+        LittleNavmap-style VS: ignore the sim's instantaneous VS variable and
+        instead compute our own rate of climb from the altitude trend across
+        the last few real telemetry samples (~1-2 poll intervals), then apply
+        a short rolling average on top. This is immune to the momentary VS
+        spikes SimConnect/X-Plane report during turbulence or frame hitches.
+        """
+        self._alt_history.append((tel.timestamp, tel.altitude_ft))
+        if len(self._alt_history) < 2:
+            return self._vs_fpm
+
+        t0, a0 = self._alt_history[0]
+        t1, a1 = self._alt_history[-1]
+        dt = t1 - t0
+        if dt <= 0:
+            return self._vs_fpm
+
+        slope_fpm = (a1 - a0) / dt * 60.0
+        self._vs_history.append(slope_fpm)
+        self._vs_fpm = sum(self._vs_history) / len(self._vs_history)
+        return self._vs_fpm
+
+    # ------------------------------------------------------------------
     # Phase computation
     # ------------------------------------------------------------------
 
-    def _compute_phase(self, tel: Telemetry) -> FlightPhase:
+    def _compute_phase(self, tel: Telemetry, vs: float) -> FlightPhase:
         alt = tel.altitude_ft
-
-        # Smooth vertical speed — SimConnect can spike thousands of FPM instantly
-        self._vs_history.append(tel.vertical_speed_fpm)
-        vs = sum(self._vs_history) / len(self._vs_history)
 
         # ── On ground ──────────────────────────────────────────────────
         if tel.on_ground:
@@ -272,6 +331,10 @@ class FlightTracker(QObject):
         if self.phase == FlightPhase.CRUISE:
             if vs >= CRUISE_EXIT_FPM:   # -500 fpm — noise won't push past this
                 return FlightPhase.CRUISE
+            if self.flight_progress < DESCENT_MIN_PROGRESS:
+                # Too early in the route for a genuine top-of-descent — this is
+                # a step change or turbulence, not the real thing. Stay put.
+                return FlightPhase.CRUISE
             # Real top-of-descent — leave cruise
             self._cruise_stable_since = None
             log.info("Leaving CRUISE: smoothed VS = %.0f fpm", vs)
@@ -284,11 +347,17 @@ class FlightTracker(QObject):
         if vs > CLIMB_VS_FPM:       # +300 fpm
             return FlightPhase.CLIMB
         if vs < DESCENT_VS_FPM:     # -300 fpm
-            if alt < APPROACH_ALT_FT:
-                dist = self.distance_to_dest_nm
-                if dist < APPROACH_DIST_NM:
-                    return FlightPhase.APPROACH
-            return FlightPhase.DESCENT
+            if self.phase != FlightPhase.APPROACH and self.flight_progress < DESCENT_MIN_PROGRESS:
+                # Not far enough along the route for a genuine descent — a sink
+                # this early is noise or a step change, not top-of-descent.
+                if self.phase in (FlightPhase.CLIMB, FlightPhase.CRUISE):
+                    return self.phase
+            else:
+                if alt < APPROACH_ALT_FT:
+                    dist = self.distance_to_dest_nm
+                    if dist < APPROACH_DIST_NM:
+                        return FlightPhase.APPROACH
+                return FlightPhase.DESCENT
 
         # VS is in the ±300 fpm grey zone — hold whatever phase we're in
         if self.phase in (FlightPhase.CLIMB, FlightPhase.DESCENT, FlightPhase.CRUISE):
