@@ -209,4 +209,4 @@ Gate sizes: **Light** (turboprop) · **Medium** (narrowbody) · **Heavy** (wideb
 
 ## Credits
 
-phpVMS crew-centre integration built in collaboration with Beni Esteve.
+phpVMS crew-centre integration built in collaboration with Benico Cuna.
